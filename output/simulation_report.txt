@@ -1,0 +1,220 @@
+======================================================================
+OIL TANKER FLOW SIMULATION - STRAIT OF HORMUZ
+Comprehensive Analysis Report
+Generated: 2026-03-19 16:44:21
+======================================================================
+
+
+============================================================
+SCENARIO: Baseline (No Disruption)
+============================================================
+======================================================================
+SIMULATION STATISTICS SUMMARY
+======================================================================
+
+THROUGHPUT METRICS
+----------------------------------------
+  Total Tankers Processed:    53
+  Total Tankers Arrived:      86
+  Tankers Rerouted:           0
+  Throughput (per day):       8.8 tankers
+
+  By Tanker Type:
+    VLCC        : 23
+    SUEZMAX     : 19
+    AFRAMAX     : 5
+    PANAMAX     : 6
+
+TIMING METRICS (hours)
+----------------------------------------
+  Average Waiting Time:       34.31
+  Maximum Waiting Time:       50.26
+  Std Dev Waiting Time:       10.34
+
+  Average Transit Time:       7.05
+  Maximum Transit Time:       8.50
+
+  Average Total Time:         41.36
+  Maximum Total Time:         58.76
+
+QUEUE METRICS
+----------------------------------------
+  Average Queue Length:       20.54
+  Maximum Queue Length:       36
+  95th Percentile Queue:      33.0
+
+OIL DELIVERY
+----------------------------------------
+  Total Oil Delivered:        71,500,000 barrels
+  Oil Delivery Rate:          11,916,667 barrels/day
+
+UTILIZATION
+----------------------------------------
+  Strait Utilization:         102.3%
+
+======================================================================
+
+============================================================
+SCENARIO: Partial Blockade (50%)
+============================================================
+======================================================================
+SIMULATION STATISTICS SUMMARY
+======================================================================
+
+THROUGHPUT METRICS
+----------------------------------------
+  Total Tankers Processed:    42
+  Total Tankers Arrived:      86
+  Tankers Rerouted:           0
+  Throughput (per day):       7.0 tankers
+
+  By Tanker Type:
+    VLCC        : 19
+    SUEZMAX     : 15
+    AFRAMAX     : 4
+    PANAMAX     : 4
+
+TIMING METRICS (hours)
+----------------------------------------
+  Average Waiting Time:       45.59
+  Maximum Waiting Time:       66.96
+  Std Dev Waiting Time:       18.38
+
+  Average Transit Time:       8.87
+  Maximum Transit Time:       12.50
+
+  Average Total Time:         54.46
+  Maximum Total Time:         75.46
+
+QUEUE METRICS
+----------------------------------------
+  Average Queue Length:       26.23
+  Maximum Queue Length:       46
+  95th Percentile Queue:      44.0
+
+OIL DELIVERY
+----------------------------------------
+  Total Oil Delivered:        57,800,000 barrels
+  Oil Delivery Rate:          9,633,333 barrels/day
+
+UTILIZATION
+----------------------------------------
+  Strait Utilization:         102.1%
+
+DISRUPTION IMPACT
+----------------------------------------
+  Avg Wait (Normal):          26.19h
+  Avg Wait (Disruption):      58.78h
+  Wait Time Increase:         124.4%
+
+======================================================================
+
+============================================================
+SCENARIO: Complete Blockade (48h)
+============================================================
+======================================================================
+SIMULATION STATISTICS SUMMARY
+======================================================================
+
+THROUGHPUT METRICS
+----------------------------------------
+  Total Tankers Processed:    46
+  Total Tankers Arrived:      86
+  Tankers Rerouted:           0
+  Throughput (per day):       7.7 tankers
+
+  By Tanker Type:
+    VLCC        : 21
+    SUEZMAX     : 17
+    AFRAMAX     : 4
+    PANAMAX     : 4
+
+TIMING METRICS (hours)
+----------------------------------------
+  Average Waiting Time:       41.74
+  Maximum Waiting Time:       97.34
+  Std Dev Waiting Time:       22.63
+
+  Average Transit Time:       7.15
+  Maximum Transit Time:       8.50
+
+  Average Total Time:         48.89
+  Maximum Total Time:         105.84
+
+QUEUE METRICS
+----------------------------------------
+  Average Queue Length:       24.42
+  Maximum Queue Length:       42
+  95th Percentile Queue:      40.0
+
+OIL DELIVERY
+----------------------------------------
+  Total Oil Delivered:        63,800,000 barrels
+  Oil Delivery Rate:          10,633,333 barrels/day
+
+UTILIZATION
+----------------------------------------
+  Strait Utilization:         92.0%
+
+DISRUPTION IMPACT
+----------------------------------------
+  Avg Wait (Normal):          29.12h
+  Avg Wait (Disruption):      52.34h
+  Wait Time Increase:         79.8%
+
+======================================================================
+
+============================================================
+SCENARIO: Severe Weather
+============================================================
+======================================================================
+SIMULATION STATISTICS SUMMARY
+======================================================================
+
+THROUGHPUT METRICS
+----------------------------------------
+  Total Tankers Processed:    50
+  Total Tankers Arrived:      86
+  Tankers Rerouted:           0
+  Throughput (per day):       8.3 tankers
+
+  By Tanker Type:
+    VLCC        : 22
+    SUEZMAX     : 18
+    AFRAMAX     : 5
+    PANAMAX     : 5
+
+TIMING METRICS (hours)
+----------------------------------------
+  Average Waiting Time:       40.70
+  Maximum Waiting Time:       56.29
+  Std Dev Waiting Time:       9.88
+
+  Average Transit Time:       7.08
+  Maximum Transit Time:       8.50
+
+  Average Total Time:         47.78
+  Maximum Total Time:         63.78
+
+QUEUE METRICS
+----------------------------------------
+  Average Queue Length:       23.67
+  Maximum Queue Length:       38
+  95th Percentile Queue:      37.0
+
+OIL DELIVERY
+----------------------------------------
+  Total Oil Delivered:        68,000,000 barrels
+  Oil Delivery Rate:          11,333,333 barrels/day
+
+UTILIZATION
+----------------------------------------
+  Strait Utilization:         102.9%
+
+DISRUPTION IMPACT
+----------------------------------------
+  Avg Wait (Normal):          44.73h
+  Avg Wait (Disruption):      24.60h
+  Wait Time Increase:         -45.0%
+
+======================================================================

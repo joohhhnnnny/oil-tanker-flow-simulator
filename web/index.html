@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Oil Tanker Flow Simulator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ["Manrope", "sans-serif"],
+            mono: ["JetBrains Mono", "monospace"],
+          },
+          colors: {
+            canvas: "#e8f1f4",
+            panel: "#f9faf8",
+            ink: "#14303d",
+            accent: "#0b5f79",
+            rust: "#a64d35",
+          },
+          boxShadow: {
+            panel: "0 12px 30px rgba(20, 48, 61, 0.12)",
+          },
+        },
+      },
+    };
+  </script>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100%; width: 100%; }
+  </style>
+</head>
+<body class="h-full bg-canvas text-ink font-sans">
+  <div class="h-full w-full p-3 md:p-4">
+    <div class="relative h-full overflow-hidden rounded-2xl border border-slate-300/70 bg-gradient-to-br from-slate-100 via-cyan-50 to-amber-50">
+      <div class="pointer-events-none absolute -top-16 -left-10 h-56 w-56 rounded-full bg-cyan-300/25 blur-3xl"></div>
+      <div class="pointer-events-none absolute bottom-0 right-0 h-64 w-64 rounded-full bg-orange-300/20 blur-3xl"></div>
+
+      <div class="relative grid h-full grid-cols-1 lg:grid-cols-[360px_1fr]">
+        <aside class="h-full overflow-y-auto border-b border-slate-300/70 bg-panel/90 p-5 shadow-panel lg:border-b-0 lg:border-r">
+          <h1 class="text-2xl font-extrabold tracking-tight">Strait Flow Control</h1>
+          <p class="mt-1 text-sm text-slate-600">FastAPI + SimPy + Leaflet dashboard</p>
+
+          <div class="mt-5 grid gap-3">
+            <label class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500" for="duration">Duration (hours)</label>
+            <input id="duration" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-sm" type="number" min="1" value="168" />
+
+            <label class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500" for="arrival">Arrival Rate (/hour)</label>
+            <input id="arrival" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-sm" type="number" min="0.1" step="0.1" value="0.7" />
+
+            <label class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500" for="capacity">Concurrent Transits</label>
+            <input id="capacity" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-sm" type="number" min="1" max="20" value="3" />
+
+            <label class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500" for="disruption">Disruption</label>
+            <select id="disruption" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-sm">
+              <option value="NONE">No Disruption</option>
+              <option value="PARTIAL_BLOCKADE">Partial Blockade</option>
+              <option value="COMPLETE_BLOCKADE">Complete Blockade</option>
+              <option value="WEATHER_DELAY">Weather Delay</option>
+            </select>
+
+            <label class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500" for="mitigation">Mitigation</label>
+            <select id="mitigation" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-sm">
+              <option value="NONE">None</option>
+              <option value="PRIORITY_SCHEDULING">Priority Scheduling</option>
+              <option value="ALTERNATIVE_ROUTING">Alternative Routing</option>
+            </select>
+
+            <label class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500" for="speed">Speed</label>
+            <select id="speed" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-sm">
+              <option value="0.5">0.5x</option>
+              <option value="1" selected>1x</option>
+              <option value="2">2x</option>
+              <option value="5">5x</option>
+              <option value="10">10x</option>
+            </select>
+          </div>
+
+          <div class="mt-5 grid grid-cols-2 gap-2">
+            <button id="startBtn" class="rounded-xl bg-accent px-3 py-2 text-sm font-bold text-white transition hover:brightness-110">Start</button>
+            <button id="pauseBtn" class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50">Pause</button>
+            <button id="resumeBtn" class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50">Resume</button>
+            <button id="stopBtn" class="rounded-xl bg-rust px-3 py-2 text-sm font-bold text-white transition hover:brightness-110">Stop</button>
+          </div>
+
+          <section class="mt-6 rounded-xl border border-slate-200 bg-white/90 p-3">
+            <h2 class="text-sm font-bold uppercase tracking-[0.12em] text-slate-600">Live Metrics</h2>
+            <div class="mt-2 grid grid-cols-2 gap-y-2 text-sm">
+              <span class="text-slate-500">Sim Time</span><strong id="simTime" class="font-mono">0.0h</strong>
+              <span class="text-slate-500">Arrivals</span><strong id="arrivals" class="font-mono">0</strong>
+              <span class="text-slate-500">Completed</span><strong id="completed" class="font-mono">0</strong>
+              <span class="text-slate-500">Queue</span><strong id="queue" class="font-mono">0</strong>
+              <span class="text-slate-500">In Transit</span><strong id="transit" class="font-mono">0</strong>
+              <span class="text-slate-500">Avg Wait</span><strong id="avgWait" class="font-mono">0.00h</strong>
+              <span class="text-slate-500">Throughput</span><strong id="throughput" class="font-mono">0.00/day</strong>
+              <span class="text-slate-500">Status</span><strong id="status" class="font-mono">Stopped</strong>
+            </div>
+          </section>
+        </aside>
+
+        <main class="h-[52vh] min-h-[360px] lg:h-full">
+          <div id="map"></div>
+        </main>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="/static/app.js?v=20260326b"></script>
+</body>
+</html>
