@@ -30,10 +30,9 @@
       },
     };
   </script>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
   <style>
     html, body { height: 100%; margin: 0; }
-    #map { height: 100%; width: 100%; }
+    #simCanvas { display: block; height: 100%; width: 100%; }
   </style>
 </head>
 <body class="h-full bg-canvas text-ink font-sans">
@@ -45,7 +44,7 @@
       <div class="relative grid h-full grid-cols-1 lg:grid-cols-[360px_1fr]">
         <aside class="h-full overflow-y-auto border-b border-slate-300/70 bg-panel/90 p-5 shadow-panel lg:border-b-0 lg:border-r">
           <h1 class="text-2xl font-extrabold tracking-tight">Strait Flow Control</h1>
-          <p class="mt-1 text-sm text-slate-600">FastAPI + SimPy + Leaflet dashboard</p>
+          <p class="mt-1 text-sm text-slate-600">FastAPI + SimPy · Canvas 2-D View</p>
 
           <div class="mt-5 grid gap-3">
             <label class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500" for="duration">Duration (hours)</label>
@@ -102,16 +101,23 @@
               <span class="text-slate-500">Status</span><strong id="status" class="font-mono">Stopped</strong>
             </div>
           </section>
+
+          <section class="mt-4 rounded-xl border border-amber-200/80 bg-amber-50/80 p-3">
+            <h2 class="text-sm font-bold uppercase tracking-[0.12em] text-amber-700">Oil Market</h2>
+            <div class="mt-2 grid grid-cols-2 gap-y-2 text-sm">
+              <span class="text-amber-700/70">Brent Crude</span><strong id="oilPrice" class="font-mono text-amber-900">$95.00/bbl</strong>
+              <span class="text-amber-700/70">Trend</span><strong id="oilTrend" class="font-mono text-amber-900">Stable</strong>
+            </div>
+          </section>
         </aside>
 
         <main class="h-[52vh] min-h-[360px] lg:h-full">
-          <div id="map"></div>
+          <canvas id="simCanvas"></canvas>
         </main>
       </div>
     </div>
   </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-  <script src="/static/app.js?v=20260326b"></script>
+  <script src="/static/app.js?v=20260328"></script>
 </body>
 </html>

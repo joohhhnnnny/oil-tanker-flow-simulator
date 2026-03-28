@@ -298,24 +298,24 @@ SOUTH_LANE_LATLON: List[LatLon] = [
 # --- Web UI routing helpers (lat, lon) ---
 PORTS_LATLON: dict[str, LatLon] = {
     # Persian Gulf export terminals
-    "ras_tanura":   (26.643, 50.159),
-    "kharg_island": (29.246, 50.324),
-    "das_island":   (25.132, 52.874),
-    "ras_laffan":   (25.919, 51.565),
-    "ruwais":       (24.110, 52.730),
-    # Outside the Strait (Gulf of Oman / Arabian Sea anchors)
-    "fujairah":     (25.115, 56.385),
-    "gulf_of_oman": (24.600, 59.700),
-    "arabian_sea":  (23.900, 60.600),
+    "kharg_island":   (29.246, 50.324),   # Iran — main Iranian crude oil export terminal
+    "ras_tanura":     (26.643, 50.159),   # Saudi Arabia — world's largest crude terminal
+    "jebel_dhanna":   (24.190, 52.610),   # Abu Dhabi, UAE — ADNOC main crude terminal
+    # Import destination anchors (eastern viewport edge → real destinations beyond)
+    "fujairah":       (25.115, 56.385),   # UAE — Port of Fujairah (visible on map)
+    "mumbai_port":    (23.800, 61.200),   # Viewport exit → Jawaharlal Nehru Port, Mumbai
+    "singapore_port": (23.500, 61.200),   # Viewport exit → Port of Singapore
 }
 
 PORTS_META: list[dict[str, object]] = [
-    {"id": "ras_tanura",   "name": "Ras Tanura",   "lat": PORTS_LATLON["ras_tanura"][0],   "lon": PORTS_LATLON["ras_tanura"][1]},
-    {"id": "kharg_island", "name": "Kharg Island",  "lat": PORTS_LATLON["kharg_island"][0], "lon": PORTS_LATLON["kharg_island"][1]},
-    {"id": "das_island",   "name": "Das Island",    "lat": PORTS_LATLON["das_island"][0],   "lon": PORTS_LATLON["das_island"][1]},
-    {"id": "ras_laffan",   "name": "Ras Laffan",    "lat": PORTS_LATLON["ras_laffan"][0],   "lon": PORTS_LATLON["ras_laffan"][1]},
-    {"id": "ruwais",       "name": "Ruwais",        "lat": PORTS_LATLON["ruwais"][0],       "lon": PORTS_LATLON["ruwais"][1]},
-    {"id": "fujairah",     "name": "Fujairah",      "lat": PORTS_LATLON["fujairah"][0],     "lon": PORTS_LATLON["fujairah"][1]},
+    # Export terminals
+    {"id": "kharg_island",   "name": "Kharg Island Terminal",    "lat": PORTS_LATLON["kharg_island"][0],   "lon": PORTS_LATLON["kharg_island"][1],   "type": "export"},
+    {"id": "ras_tanura",     "name": "Ras Tanura Terminal",      "lat": PORTS_LATLON["ras_tanura"][0],     "lon": PORTS_LATLON["ras_tanura"][1],     "type": "export"},
+    {"id": "jebel_dhanna",   "name": "Jebel Dhanna Terminal",    "lat": PORTS_LATLON["jebel_dhanna"][0],   "lon": PORTS_LATLON["jebel_dhanna"][1],   "type": "export"},
+    # Import destinations
+    {"id": "fujairah",       "name": "Port of Fujairah",         "lat": PORTS_LATLON["fujairah"][0],       "lon": PORTS_LATLON["fujairah"][1],       "type": "import"},
+    {"id": "mumbai_port",    "name": "Jawaharlal Nehru Port",    "lat": PORTS_LATLON["mumbai_port"][0],    "lon": PORTS_LATLON["mumbai_port"][1],    "type": "import"},
+    {"id": "singapore_port", "name": "Port of Singapore",        "lat": PORTS_LATLON["singapore_port"][0], "lon": PORTS_LATLON["singapore_port"][1], "type": "import"},
 ]
 
 CHOKEPOINTS_META: list[dict[str, object]] = [
@@ -394,153 +394,112 @@ def _enforce_tss_corridor(route: dict[str, object]) -> None:
 # ---------------------------------------------------------------------------
 # EXPORT ROUTES  (outbound / eastbound — use SOUTH_LANE through strait)
 # ---------------------------------------------------------------------------
-# Persian Gulf shipping corridor runs roughly east–west along ~26.5 N.
-# Ships funnel through the TSS, exit SE around Musandam, then spread out
-# into the Gulf of Oman / Arabian Sea.
+# 3 export terminals in the Persian Gulf funnel through the TSS SOUTH_LANE,
+# then each heads to its paired import destination.
 #
-# Critical constraint: NO waypoint must be north of 25.9 N at longitudes
-# 56.5–57.2 E (that band is the Omani Musandam land mass).
-# After clearing the strait (lon > 57.2 E) ships are in open water.
+# Critical constraint: NO waypoint north of 25.9 N at longitudes 56.5–57.2 E
+# (Omani Musandam land mass). After clearing the strait (lon > 57.2 E) ships
+# are in open water.
 
 EXPORT_ROUTES: list[dict[str, object]] = [
     {
-        "id": "ras_tanura_export",
-        "name": "Ras Tanura → Arabian Sea",
+        "id": "kharg_to_singapore",
+        "name": "Kharg Island → Port of Singapore",
         "direction": "eastbound",
-        "origin": "ras_tanura",
-        "destination": "arabian_sea",
+        "origin": "kharg_island",
+        "destination": "singapore_port",
         "path": _concat(
             [
-                PORTS_LATLON["ras_tanura"],
-                (26.55, 50.80),
-                (26.50, 51.60),
-                (26.40, 52.40),
-                (26.25, 53.10),
-                (26.15, 53.85),   # South of Kish Island (26.47–26.63N, 53.83–54.02E)
-                (26.20, 54.30),   # Continue south of Kish longitude band
-                (26.38, 54.80),   # Return to main channel
+                PORTS_LATLON["kharg_island"],       # (29.246, 50.324)
+                (28.90, 50.55),                     # gentle SE departure from Kharg
+                (28.60, 50.80),
+                (28.20, 51.15),                     # smooth curve — Iran coast ~28.25N here
+                (27.80, 51.50),
+                (27.45, 51.90),                     # Iran coast ~27.85N, 0.40° margin
+                (27.20, 52.30),
+                (26.80, 52.65),                     # begin Lavan bypass zone
+                (26.45, 52.95),                     # south of Lavan Island (26.65–26.80N)
+                (26.25, 53.50),                     # clear south of both Lavan & Kish approach
+                (26.15, 53.90),                     # south of Kish Island (26.47N)
+                (26.20, 54.25),                     # gentle curve east of Kish
+                (26.30, 54.60),
+                (26.42, 54.90),
                 (26.48, 55.30),
             ],
             SOUTH_LANE_LATLON,
             [
-                # After clearing strait, drop SE into Gulf of Oman — clear of all land
-                (24.20, 58.30),
-                (23.95, 58.70),
-                (23.80, 59.20),
-                (23.75, 59.80),
-                PORTS_LATLON["arabian_sea"],
+                (24.20, 58.50),                     # gentle SE exit from strait
+                (24.00, 59.10),
+                (23.80, 59.60),
+                (23.60, 60.40),
+                PORTS_LATLON["singapore_port"],     # (23.50, 61.20)
             ],
         ),
     },
     {
-        "id": "kharg_export",
-        "name": "Kharg Island → Gulf of Oman",
+        "id": "ras_tanura_to_mumbai",
+        "name": "Ras Tanura → Jawaharlal Nehru Port",
         "direction": "eastbound",
-        "origin": "kharg_island",
-        "destination": "gulf_of_oman",
+        "origin": "ras_tanura",
+        "destination": "mumbai_port",
         "path": _concat(
             [
-                PORTS_LATLON["kharg_island"],
-                (28.60, 50.80),
-                (27.80, 51.50),
-                (27.20, 52.30),
-                (30.0, 52.90),   # Pass south of Lavan Island (26.65–26.80N, 53.22–53.48E)
-                (26.25, 53.50),   # Clear south of both Lavan and Kish approach
-                (26.15, 53.90),   # South of Kish Island (26.47–26.63N, 53.83–54.02E)
-                (26.25, 54.40),   # Re-enter main channel east of Kish
-                (26.42, 54.90),
-                (30.0, 55.30),
+                PORTS_LATLON["ras_tanura"],         # (26.643, 50.159)
+                (26.60, 50.50),                     # gentle eastward departure
+                (26.55, 50.80),
+                (26.50, 51.20),
+                (26.48, 51.60),
+                (26.40, 52.10),                     # smooth traverse toward Kish zone
+                (26.30, 52.60),
+                (26.20, 53.10),                     # south of Lavan (26.65N at lon 53.2–53.5)
+                (26.12, 53.55),                     # approach Kish from west
+                (26.10, 53.90),                     # south of Kish Island (26.47N)
+                (26.18, 54.30),
+                (26.30, 54.65),
+                (26.42, 54.95),
+                (26.48, 55.30),
             ],
             SOUTH_LANE_LATLON,
             [
-                (70.0, 58.30),
-                (70.0, 58.80),
-                (70.0, 20.0),
-                PORTS_LATLON["gulf_of_oman"],
+                (24.20, 58.50),                     # gentle descent from strait
+                (24.05, 59.10),
+                (23.95, 59.70),
+                (23.85, 60.40),
+                PORTS_LATLON["mumbai_port"],        # (23.80, 61.20)
             ],
         ),
     },
     {
-        "id": "das_export",
-        "name": "Das Island → Fujairah",
+        "id": "jebel_dhanna_to_fujairah",
+        "name": "Jebel Dhanna → Port of Fujairah",
         "direction": "eastbound",
-        "origin": "das_island",
+        "origin": "jebel_dhanna",
         "destination": "fujairah",
         "path": _concat(
             [
-                PORTS_LATLON["das_island"],
-                (25.50, 53.20),
-                (25.80, 53.80),   # Well south of Kish Island — approach from south
-                (26.10, 54.30),   # South of Kish (26.47–26.63N, 53.83–54.02E)
-                (26.35, 54.80),
-                (26.45, 55.10),
+                PORTS_LATLON["jebel_dhanna"],       # (24.190, 52.610)
+                (24.35, 52.75),                     # gentle NE departure
+                (24.55, 52.95),
+                (24.85, 53.20),
+                (25.20, 53.45),                     # smooth ascent
+                (25.55, 53.70),
+                (25.85, 54.00),                     # well south of Kish (26.47N)
+                (26.10, 54.35),
+                (26.25, 54.65),
+                (26.38, 54.95),
                 (26.48, 55.30),
             ],
             SOUTH_LANE_LATLON,
             [
-                # After exiting strait, curve back west to Fujairah.
-                # Must stay NORTH of Oman coast.
-                # Fujairah is at 25.1N, 56.4E (on the coast)
-                (24.50, 57.80),   # Exit into Gulf of Oman
-                (24.60, 57.50),   # Curve west, staying north of coast
-                (24.70, 57.20),
-                (24.85, 56.90),
-                (24.95, 56.65),   # Approaching Fujairah
-                (25.05, 56.50),   # Final approach
-                PORTS_LATLON["fujairah"],
-            ],
-        ),
-    },
-    {
-        "id": "ras_laffan_export",
-        "name": "Ras Laffan → Arabian Sea",
-        "direction": "eastbound",
-        "origin": "ras_laffan",
-        "destination": "arabian_sea",
-        "path": _concat(
-            [
-                PORTS_LATLON["ras_laffan"],
-                (26.05, 52.00),
-                (26.15, 52.80),
-                (26.15, 53.60),   # Clearly south of Kish approach
-                (26.15, 54.10),   # South of Kish Island (26.47–26.63N, 53.83–54.02E)
-                (26.30, 54.70),   # Return to main channel east of Kish
-                (26.45, 55.10),
-                (26.48, 55.30),
-            ],
-            SOUTH_LANE_LATLON,
-            [
-                (24.20, 58.30),
-                (24.00, 58.80),
-                (23.85, 59.40),
-                (23.80, 60.00),
-                PORTS_LATLON["arabian_sea"],
-            ],
-        ),
-    },
-    {
-        "id": "ruwais_export",
-        "name": "Ruwais → Gulf of Oman",
-        "direction": "eastbound",
-        "origin": "ruwais",
-        "destination": "gulf_of_oman",
-        "path": _concat(
-            [
-                PORTS_LATLON["ruwais"],
-                (24.40, 52.80),
-                (24.80, 53.20),
-                (25.40, 53.60),
-                (25.90, 54.10),   # Well south of Kish — in open water
-                (26.20, 54.60),
-                (26.40, 55.00),
-                (26.48, 55.30),
-            ],
-            SOUTH_LANE_LATLON,
-            [
-                (24.20, 58.30),
-                (24.10, 58.80),
-                (24.20, 59.30),
-                PORTS_LATLON["gulf_of_oman"],
+                # After strait, curve back west to Fujairah — stay north of Oman coast
+                (24.30, 58.00),
+                (24.35, 57.70),
+                (24.50, 57.40),
+                (24.65, 57.10),
+                (24.82, 56.80),
+                (24.95, 56.55),
+                (25.06, 56.42),
+                PORTS_LATLON["fujairah"],           # (25.115, 56.385)
             ],
         ),
     },
@@ -549,143 +508,109 @@ EXPORT_ROUTES: list[dict[str, object]] = [
 # ---------------------------------------------------------------------------
 # INBOUND ROUTES  (westbound — use NORTH_LANE reversed through strait)
 # ---------------------------------------------------------------------------
+# Each inbound route is the reverse pair of its export counterpart.
 
 INBOUND_ROUTES: list[dict[str, object]] = [
     {
-        "id": "ras_tanura_inbound",
-        "name": "Arabian Sea → Ras Tanura",
+        "id": "singapore_to_kharg",
+        "name": "Port of Singapore → Kharg Island",
         "direction": "westbound",
-        "origin": "arabian_sea",
-        "destination": "ras_tanura",
-        "path": _concat(
-            [
-                PORTS_LATLON["arabian_sea"],
-                (23.80, 60.00),
-                (23.95, 59.40),
-                (24.10, 58.80),
-                (24.30, 58.30),
-                (24.55, 58.10),
-            ],
-            list(reversed(NORTH_LANE_LATLON)),
-            [
-                (26.45, 55.10),
-                (26.30, 54.70),
-                (26.15, 54.10),   # South of Kish Island (26.47–26.63N, 53.83–54.02E)
-                (26.15, 53.60),   # Continue south of Kish longitude band
-                (26.30, 52.80),
-                (26.42, 51.90),
-                (26.52, 50.90),
-                PORTS_LATLON["ras_tanura"],
-            ],
-        ),
-    },
-    {
-        "id": "kharg_inbound",
-        "name": "Gulf of Oman → Kharg Island",
-        "direction": "westbound",
-        "origin": "gulf_of_oman",
+        "origin": "singapore_port",
         "destination": "kharg_island",
         "path": _concat(
             [
-                PORTS_LATLON["gulf_of_oman"],
-                (24.30, 59.20),
-                (24.20, 58.60),
-                (24.40, 58.20),
+                PORTS_LATLON["singapore_port"],     # (23.50, 61.20)
+                (23.60, 60.40),
+                (23.80, 59.60),
+                (24.05, 59.00),
+                (24.25, 58.50),
+                (24.45, 58.15),
                 (24.55, 58.10),
             ],
             list(reversed(NORTH_LANE_LATLON)),
             [
-                (26.45, 55.10),
-                (26.25, 54.60),
-                (26.15, 54.10),   # South of Kish Island (26.47–26.63N, 53.83–54.02E)
-                (26.55, 53.10),   # West of Lavan's longitude — both islands now clear
-                (27.00, 52.50),   # Open water heading northwest to Kharg
-                (27.60, 51.80),
-                (28.20, 51.10),
-                (28.80, 50.70),
-                PORTS_LATLON["kharg_island"],
+                (26.52, 55.30),                     # smooth transition from NORTH_LANE end
+                (26.45, 55.05),
+                (26.35, 54.70),
+                (26.20, 54.30),
+                (26.10, 53.90),                     # south of Kish Island (26.47N)
+                (26.15, 53.50),                     # south of Lavan approach
+                (26.40, 53.00),                     # west of Lavan
+                (26.80, 52.55),                     # begin northward ascent
+                (27.20, 52.10),
+                (27.60, 51.65),                     # Iran coast ~28.05N, 0.45° margin
+                (28.00, 51.20),
+                (28.45, 50.80),
+                (28.80, 50.55),
+                PORTS_LATLON["kharg_island"],       # (29.246, 50.324)
             ],
         ),
     },
     {
-        "id": "ruwais_inbound",
-        "name": "Gulf of Oman → Ruwais",
+        "id": "mumbai_to_ras_tanura",
+        "name": "Jawaharlal Nehru Port → Ras Tanura",
         "direction": "westbound",
-        "origin": "gulf_of_oman",
-        "destination": "ruwais",
+        "origin": "mumbai_port",
+        "destination": "ras_tanura",
         "path": _concat(
             [
-                PORTS_LATLON["gulf_of_oman"],
-                (24.30, 59.20),
-                (24.20, 58.60),
-                (24.40, 58.20),
+                PORTS_LATLON["mumbai_port"],        # (23.80, 61.20)
+                (23.85, 60.40),
+                (23.95, 59.70),
+                (24.10, 59.10),
+                (24.30, 58.50),
+                (24.45, 58.20),
                 (24.55, 58.10),
             ],
             list(reversed(NORTH_LANE_LATLON)),
             [
-                (26.50, 55.30),
-                (26.50, 54.80),
-                (26.30, 54.30),
-                (26.00, 53.75),
-                (25.50, 53.25),
-                (24.80, 52.90),
-                PORTS_LATLON["ruwais"],
+                (26.52, 55.30),                     # smooth transition from NORTH_LANE end
+                (26.45, 55.05),
+                (26.35, 54.70),
+                (26.22, 54.30),
+                (26.10, 53.90),                     # south of Kish
+                (26.10, 53.50),
+                (26.18, 53.00),                     # south of Lavan
+                (26.28, 52.50),
+                (26.38, 52.00),
+                (26.45, 51.50),
+                (26.52, 51.00),
+                (26.58, 50.50),
+                PORTS_LATLON["ras_tanura"],         # (26.643, 50.159)
             ],
         ),
     },
     {
-        "id": "ras_laffan_inbound",
-        "name": "Arabian Sea → Ras Laffan",
-        "direction": "westbound",
-        "origin": "arabian_sea",
-        "destination": "ras_laffan",
-        "path": _concat(
-            [
-                PORTS_LATLON["arabian_sea"],
-                (23.80, 60.00),
-                (23.95, 59.40),
-                (24.10, 58.80),
-                (24.30, 58.30),
-                (24.55, 58.10),
-            ],
-            list(reversed(NORTH_LANE_LATLON)),
-            [
-                (26.45, 55.10),
-                (26.25, 54.70),
-                (26.15, 54.00),   # South of Kish Island (26.47–26.63N, 53.83–54.02E)
-                (26.10, 53.35),   # Clear west of Kish longitude band
-                (26.05, 52.60),
-                (25.95, 52.00),
-                PORTS_LATLON["ras_laffan"],
-            ],
-        ),
-    },
-    {
-        "id": "das_inbound",
-        "name": "Fujairah → Das Island",
+        "id": "fujairah_to_jebel_dhanna",
+        "name": "Port of Fujairah → Jebel Dhanna",
         "direction": "westbound",
         "origin": "fujairah",
-        "destination": "das_island",
+        "destination": "jebel_dhanna",
         "path": _concat(
             [
-                # From Fujairah head east into Gulf of Oman, then join inbound lane.
-                # Must stay NORTH of Oman coast throughout.
-                PORTS_LATLON["fujairah"],
-                (25.05, 56.50),   # Head east from Fujairah
-                (24.95, 56.65),
-                (24.85, 56.90),
-                (24.70, 57.20),
-                (24.60, 57.50),
-                (24.50, 57.80),   # Into Gulf of Oman
-                (24.55, 58.10),   # Join the inbound lane
+                PORTS_LATLON["fujairah"],           # (25.115, 56.385)
+                (25.06, 56.45),
+                (24.95, 56.58),
+                (24.85, 56.80),
+                (24.72, 57.05),
+                (24.60, 57.35),
+                (24.48, 57.65),
+                (24.48, 57.90),
+                (24.55, 58.10),
             ],
             list(reversed(NORTH_LANE_LATLON)),
             [
-                (26.50, 55.30),
-                (26.50, 54.70),
-                (26.20, 54.00),
-                (25.80, 53.40),
-                PORTS_LATLON["das_island"],
+                (26.52, 55.30),                     # smooth transition from NORTH_LANE end
+                (26.48, 55.00),
+                (26.42, 54.65),
+                (26.30, 54.30),
+                (26.12, 53.95),                     # south of Kish
+                (25.90, 53.60),
+                (25.60, 53.30),
+                (25.25, 53.05),
+                (24.85, 52.85),
+                (24.50, 52.72),
+                PORTS_LATLON["jebel_dhanna"],       # (24.190, 52.610)
             ],
         ),
     },
@@ -693,63 +618,10 @@ INBOUND_ROUTES: list[dict[str, object]] = [
 
 REAL_ROUTES: list[dict[str, object]] = EXPORT_ROUTES + INBOUND_ROUTES
 
-# Route waypoints used to keep A* sea routing aligned with realistic Hormuz lanes.
-# Western gulf waypoints specifically route around:
-#   Kish Island  (26.47–26.63N, 53.83–54.02E) — pass south via ~26.15N
-#   Lavan Island (26.65–26.80N, 53.22–53.48E) — descend south before entering its longitude band
-SEA_ROUTE_WAYPOINTS: dict[str, list[LatLon]] = {
-    # EXPORT (eastbound) ────────────────────────────────────────────────────
-    "ras_tanura_export": [
-        (26.40, 52.40), (26.15, 53.85),   # dip south of Kish Island
-        (26.38, 54.80), (26.48, 55.50),   # re-enter main channel
-        (26.40, 56.60), (25.78, 57.12), (24.40, 58.10), (23.80, 59.20),
-    ],
-    "kharg_export": [
-        (26.55, 52.90), (26.15, 53.90),   # south of Lavan then Kish
-        (26.42, 54.90), (26.48, 55.50),
-        (26.40, 56.60), (25.78, 57.12), (24.40, 58.10),
-    ],
-    "das_export": [
-        (25.80, 53.80), (26.10, 54.30),   # southern approach, south of Kish
-        (26.35, 54.80), (26.48, 55.50),
-        (26.40, 56.60), (25.78, 57.12), (24.85, 57.92),
-    ],
-    "ras_laffan_export": [
-        (26.15, 52.80), (26.15, 54.10),   # south of Kish throughout
-        (26.30, 54.70), (26.48, 55.50),
-        (26.40, 56.60), (25.78, 57.12), (24.40, 58.10), (23.85, 59.40),
-    ],
-    "ruwais_export": [
-        (25.40, 53.60), (25.90, 54.10),   # southern approach, clear of all islands
-        (26.40, 55.00), (26.48, 55.50),
-        (26.40, 56.60), (25.78, 57.12), (24.40, 58.10),
-    ],
-    # INBOUND (westbound) ───────────────────────────────────────────────────
-    "ras_tanura_inbound": [
-        (24.55, 58.10), (25.00, 57.94), (26.35, 56.90), (26.55, 55.50),
-        (26.15, 54.10), (26.15, 53.60),  # south of Kish Island
-        (26.30, 52.80),
-    ],
-    "kharg_inbound": [
-        (24.55, 58.10), (25.00, 57.94), (26.35, 56.90), (26.55, 55.50),
-        (26.15, 54.10),                  # south of Kish Island
-        (26.55, 53.10),                  # west of Lavan's longitude, below its latitude
-        (27.00, 52.50), (27.60, 51.80),
-    ],
-    "ruwais_inbound": [
-        (24.55, 58.10), (25.00, 57.94), (26.35, 56.90), (26.55, 55.50),
-        (26.10, 54.20), (25.90, 53.80), (25.40, 53.30),
-    ],
-    "ras_laffan_inbound": [
-        (24.55, 58.10), (25.00, 57.94), (26.35, 56.90), (26.55, 55.50),
-        (26.15, 54.00), (26.10, 53.35),  # south of Kish Island
-        (26.05, 52.60),
-    ],
-    "das_inbound": [
-        (24.55, 58.10), (25.00, 57.94), (26.35, 56.90), (26.55, 55.50),
-        (26.10, 54.20), (25.80, 53.60), (25.50, 53.10),
-    ],
-}
+# SEA_ROUTE_WAYPOINTS was previously used by _rebuild_routes_with_sea_routing()
+# to guide A* pathfinding.  Since manual routes now embed canonical TSS lanes
+# directly via _concat, these waypoints are no longer needed.
+SEA_ROUTE_WAYPOINTS: dict[str, list[LatLon]] = {}
 
 
 def _repair_invalid_routes_with_natural_earth() -> None:
@@ -855,11 +727,10 @@ def _print_route_validation_summary() -> None:
     print(f"[geo_layout] route validation summary: valid={valid} invalid={invalid}")
 
 
-_rebuild_routes_with_sea_routing()
+# Manual _concat routes already embed canonical TSS lanes (SOUTH_LANE_LATLON for
+# eastbound, reversed NORTH_LANE_LATLON for westbound).  Only run the repair
+# safety net for any route that may clip land.
 _repair_invalid_routes_with_natural_earth()
-
-for _route in REAL_ROUTES:
-    _enforce_tss_corridor(_route)
 
 # ---------------------------------------------------------------------------
 # Densify all routes for smooth rendering (prevents straight-line land crossing)
@@ -867,7 +738,7 @@ for _route in REAL_ROUTES:
 for _route in REAL_ROUTES:
     _path = _route.get("path")
     if _path and len(_path) >= 2:
-        _route["path"] = densify_latlon_path(_path, step_km=3.0)
+        _route["path"] = densify_latlon_path(_path, step_km=2.0)
 
 _print_route_validation_summary()
 

@@ -224,23 +224,23 @@ class WebSimulationBridge:
         if disruption == DisruptionType.PARTIAL_BLOCKADE:
             disruption_config = DisruptionConfig(
                 disruption_type=disruption,
-                start_time_hours=24.0,
-                duration_hours=24.0,
+                start_time_hours=1.0,
+                duration_hours=200.0,
                 capacity_reduction=0.5,
                 transit_time_multiplier=1.5,
             )
         elif disruption == DisruptionType.COMPLETE_BLOCKADE:
             disruption_config = DisruptionConfig(
                 disruption_type=disruption,
-                start_time_hours=24.0,
-                duration_hours=12.0,
+                start_time_hours=0.0,
+                duration_hours=200.0,
                 capacity_reduction=1.0,
             )
         elif disruption == DisruptionType.WEATHER_DELAY:
             disruption_config = DisruptionConfig(
                 disruption_type=disruption,
-                start_time_hours=12.0,
-                duration_hours=10.0,
+                start_time_hours=0.5,
+                duration_hours=200.0,
                 capacity_reduction=0.3,
                 transit_time_multiplier=2.0,
             )
@@ -451,14 +451,8 @@ class WebSimulationBridge:
         return self.rng.choice(routes)
 
     def _speed_knots_for_type(self, tanker_type: TankerType) -> float:
-        # Typical laden service speeds (approx). Used only for visualization timing.
-        if tanker_type == TankerType.VLCC:
-            return 13.0
-        if tanker_type == TankerType.SUEZMAX:
-            return 14.0
-        if tanker_type == TankerType.AFRAMAX:
-            return 14.5
-        return 15.0
+        # Uniform speed for all types so ships never overtake one another visually.
+        return 13.0
 
     def _queue_anchor(self, route: dict[str, object]) -> tuple[float, float]:
         path = list(route.get("path", []))
@@ -498,8 +492,11 @@ class WebSimulationBridge:
             speed = self._speed
 
         sim_time = self.env.now if self.env else 0.0
-        queue_length = self.strait.queue_length if self.strait else 0
-        in_transit = self.strait.in_transit_count if self.strait else 0
+        queue_length = sum(1 for t in self._ship_tracks.values() if t.status in ("waiting", "blocked"))
+        in_transit = sum(1 for t in self._ship_tracks.values() if t.status == "in_transit")
+        # Complete blockade: strait is fully closed — no ships should register as in-transit
+        if self.strait and self.strait._blocked:
+            in_transit = 0
         avg_wait = (sum(self._wait_times) / len(self._wait_times)) if self._wait_times else 0.0
         throughput = (self._total_completed / sim_time * 24.0) if sim_time > 0 else 0.0
 
