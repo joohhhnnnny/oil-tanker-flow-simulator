@@ -135,7 +135,8 @@ class ShipTrack:
 class StartRequest(BaseModel):
     duration_hours: float = Field(default=168.0, gt=0)
     arrival_rate_per_hour: float = Field(default=0.7, gt=0)
-    max_concurrent_transits: int = Field(default=3, ge=1, le=20)
+    export_count: int = Field(default=6, ge=0, le=20)
+    import_count: int = Field(default=6, ge=0, le=20)
     disruption: str = Field(default="NONE")
     mitigation: str = Field(default="NONE")
 
@@ -176,8 +177,11 @@ class WebSimulationBridge:
         self._disruption_active = False
         self._total_arrivals = 0
         self._total_completed = 0
+        self._total_deployed = 0
         self._oil_delivered_total = 0
         self._wait_times: list[float] = []
+        self._export_count = 6
+        self._import_count = 6
 
     def start(self, req: StartRequest) -> None:
         self.stop()
@@ -189,8 +193,11 @@ class WebSimulationBridge:
             self._disruption_active = False
             self._total_arrivals = 0
             self._total_completed = 0
+            self._total_deployed = 0
             self._oil_delivered_total = 0
             self._wait_times.clear()
+            self._export_count = req.export_count
+            self._import_count = req.import_count
             self._running = True
             self._paused = False
 
@@ -253,7 +260,7 @@ class WebSimulationBridge:
             random_seed=42,
             strait_config=StraitConfig(
                 mean_arrival_rate_per_hour=req.arrival_rate_per_hour,
-                max_concurrent_transits=req.max_concurrent_transits,
+                max_concurrent_transits=max(1, req.export_count + req.import_count),
             ),
             disruption_config=disruption_config,
             mitigation_strategy=mitigation,
@@ -308,10 +315,31 @@ class WebSimulationBridge:
                 time.sleep(0.1)
 
     def _tanker_generator(self) -> Generator[Any, Any, None]:
-        while True:
-            mean_interarrival = 1.0 / self.config.strait_config.mean_arrival_rate_per_hour
-            interarrival_time = self.rng.expovariate(1.0 / mean_interarrival)
-            yield self.env.timeout(interarrival_time)
+        """Spawn a fixed set of tankers: export_count eastbound + import_count westbound."""
+        total = self._export_count + self._import_count
+        if total == 0:
+            return
+
+        eastbound_routes = self._routes_by_direction.get("eastbound") or []
+        westbound_routes = self._routes_by_direction.get("westbound") or []
+
+        # Build the manifest: interleave export/import for maximum spacing
+        manifest: list[tuple[str, dict[str, object]]] = []
+        ei, ii = 0, 0
+        while ei < self._export_count or ii < self._import_count:
+            if ei < self._export_count:
+                route = eastbound_routes[ei % len(eastbound_routes)] if eastbound_routes else {"id": "fallback", "name": "Fallback", "direction": "eastbound", "path": []}
+                manifest.append(("eastbound", route))
+                ei += 1
+            if ii < self._import_count:
+                route = westbound_routes[ii % len(westbound_routes)] if westbound_routes else {"id": "fallback", "name": "Fallback", "direction": "westbound", "path": []}
+                manifest.append(("westbound", route))
+                ii += 1
+
+        # Stagger spawns: 0.6h between each → same-direction gap ≈ 1.2h ≈ 15.6 NM (>1 ship-length gap)
+        for idx, (direction, route) in enumerate(manifest):
+            if idx > 0:
+                yield self.env.timeout(0.6)
 
             with self._lock:
                 if not self._running:
@@ -320,8 +348,6 @@ class WebSimulationBridge:
             self._tanker_counter += 1
             tanker_type = self._select_tanker_type()
             tanker_config = self.config.tanker_configs[tanker_type]
-            direction = self._select_direction()
-            route = self._select_route(direction)
 
             tanker = Tanker(
                 tanker_id=self._tanker_counter,
@@ -329,7 +355,7 @@ class WebSimulationBridge:
                 config=tanker_config,
             )
             self._active_tankers[tanker.tanker_id] = tanker
-            self._total_arrivals += 1
+            self._total_deployed += 1
 
             queue_lat, queue_lon = self._queue_anchor(route)
             speed_knots = self._speed_knots_for_type(tanker_type)
@@ -414,6 +440,7 @@ class WebSimulationBridge:
 
             tanker.end_transit_time = self.env.now
             tanker.status = TankerStatus.COMPLETED
+            self._total_arrivals += 1
             self._total_completed += 1
             self._oil_delivered_total += tanker.cargo_barrels
 
@@ -439,16 +466,6 @@ class WebSimulationBridge:
             if r <= cumulative:
                 return tanker_type
         return list(self.config.tanker_configs.keys())[-1]
-
-    def _select_direction(self) -> str:
-        # Gulf exports dominate tanker movements; bias outbound slightly.
-        return "eastbound" if self.rng.random() < 0.70 else "westbound"
-
-    def _select_route(self, direction: str) -> dict[str, object]:
-        routes = self._routes_by_direction.get(direction) or []
-        if not routes:
-            return {"id": "fallback", "name": "Fallback", "direction": direction, "path": []}
-        return self.rng.choice(routes)
 
     def _speed_knots_for_type(self, tanker_type: TankerType) -> float:
         # Uniform speed for all types so ships never overtake one another visually.
@@ -510,6 +527,7 @@ class WebSimulationBridge:
             "stats": {
                 "total_arrivals": self._total_arrivals,
                 "total_completed": self._total_completed,
+                "total_deployed": self._total_deployed,
                 "queue_length": queue_length,
                 "in_transit": in_transit,
                 "avg_wait_hours": avg_wait,

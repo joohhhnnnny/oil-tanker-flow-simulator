@@ -53,9 +53,6 @@
             <label class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500" for="arrival">Arrival Rate (/hour)</label>
             <input id="arrival" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-sm" type="number" min="0.1" step="0.1" value="0.7" />
 
-            <label class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500" for="capacity">Concurrent Transits</label>
-            <input id="capacity" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-sm" type="number" min="1" max="20" value="3" />
-
             <label class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500" for="disruption">Disruption</label>
             <select id="disruption" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-sm">
               <option value="NONE">No Disruption</option>
@@ -73,11 +70,11 @@
 
             <label class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500" for="speed">Speed</label>
             <select id="speed" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-sm">
-              <option value="0.5">0.5x</option>
-              <option value="1" selected>1x</option>
-              <option value="2">2x</option>
-              <option value="5">5x</option>
-              <option value="10">10x</option>
+              <option value="1">0.5x</option>
+              <option value="2" selected>1x</option>
+              <option value="4">2x</option>
+              <option value="10">5x</option>
+              <option value="20">10x</option>
             </select>
           </div>
 
@@ -93,7 +90,7 @@
             <div class="mt-2 grid grid-cols-2 gap-y-2 text-sm">
               <span class="text-slate-500">Sim Time</span><strong id="simTime" class="font-mono">0.0h</strong>
               <span class="text-slate-500">Arrivals</span><strong id="arrivals" class="font-mono">0</strong>
-              <span class="text-slate-500">Completed</span><strong id="completed" class="font-mono">0</strong>
+              <span class="text-slate-500">Deployed</span><strong id="completed" class="font-mono">0</strong>
               <span class="text-slate-500">Queue</span><strong id="queue" class="font-mono">0</strong>
               <span class="text-slate-500">In Transit</span><strong id="transit" class="font-mono">0</strong>
               <span class="text-slate-500">Avg Wait</span><strong id="avgWait" class="font-mono">0.00h</strong>
@@ -118,6 +115,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260328"></script>
+  <script src="/static/app.js?v=20260329c"></script>
 </body>
 </html>

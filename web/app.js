@@ -18,12 +18,12 @@ canvas.height = canvas.offsetHeight;
 const LAY = {
   landTop: 0.12,   // bottom edge of top land strip (Iran)
   landBot: 0.88,   // top edge of bottom land strip (Arabia)
-  laneL:   0.22,   // strait entrance X
-  laneR:   0.78,   // strait exit X
+  laneL:   0.32,   // strait entrance X
+  laneR:   0.68,   // strait exit X
   outY:    0.44,   // outbound lane centre Y
   inY:     0.56,   // inbound  lane centre Y
-  brL:     0.14,   // left shoreline X — export ports sit here
-  brR:     0.86,   // right shoreline X — import ports sit here
+  brL:     0.10,   // left shoreline X — export ports sit here
+  brR:     0.90,   // right shoreline X — import ports sit here
 };
 
 /* ---------- Port definitions ---------- */
@@ -34,7 +34,7 @@ const EXP = [
 ];
 const IMP = [
   { id: "fujairah",       y: 0.28, label: "Fujairah",  color: "#00BFFF" },
-  { id: "mumbai_port",    y: 0.50, label: "Mumbai",     color: "#4169E1" },
+  { id: "mumbai_port",    y: 0.50, label: "Nehru",      color: "#4169E1" },
   { id: "singapore_port", y: 0.72, label: "Singapore",  color: "#1E90FF" },
 ];
 
@@ -80,6 +80,17 @@ let geoPaths  = {};   // route_id → [[lat,lon], …]
 let geoDistC  = {};   // route_id → { cum[], total }
 let liveShips = [];
 let pollTimer = null;
+
+/* ---------- Per-ship smoothed progress (keeps ships on the curve) ---------- */
+const shipSmooth    = {};   // ship.id → smoothed progress (float 0..1)
+const shipMeta      = {};   // ship.id → { rid, dir, type, color }  — kept after departure
+const departedShips = {};   // ship.id → true — ships removed by backend but still animating
+
+/* ---------- Frontend arrivals counter (counts VISUAL completions) ---------- */
+let frontendArrivals = 0;
+
+/* ---------- Stop-in-progress guard — blocks WS/poll from re-populating ships ---------- */
+let simStopping = false;
 
 /* ---------- Simulation session state ---------- */
 let simStopTimer       = null;   // auto-stop after 60s real time
@@ -150,6 +161,23 @@ function schematicXY(rid, prog) {
     }
   }
   return pts[pts.length - 1];
+}
+
+/* ---------- Back-compute progress from schematic X (binary search) ---------- */
+// Schematic X is monotone with progress (outbound: increasing; inbound: decreasing)
+// so a 20-step binary search converges to sub-pixel accuracy.
+function backComputeProg(rid, targetX, dir) {
+  let lo = 0, hi = 1;
+  for (let iter = 0; iter < 20; iter++) {
+    const mid = (lo + hi) / 2;
+    const px  = schematicXY(rid, mid)?.[0] ?? 0;
+    if (dir === "out") {
+      if (px < targetX) lo = mid; else hi = mid;
+    } else {
+      if (px > targetX) lo = mid; else hi = mid;
+    }
+  }
+  return Math.max(0, Math.min(1, (lo + hi) / 2));
 }
 
 /* ---------- Tanker colours ---------- */
@@ -623,69 +651,154 @@ function drawBlockadeOverlay() {
 }
 
 function drawShips() {
-  // During weather visual, hold ships at port (don't render in-transit)
-  const weatherHold = weatherVisualEnd > 0 && Date.now() < weatherVisualEnd;
-  // During complete blockade, show ships frozen at port
-  const blockadeHold = disruptionLive && activeDisruption === "COMPLETE_BLOCKADE";
+  // Hard guard: if we're in the middle of a stop, draw nothing at all.
+  if (simStopping) return;
 
+  const weatherHold  = weatherVisualEnd > 0 && Date.now() < weatherVisualEnd;
+  const blockadeHold = disruptionLive && activeDisruption === "COMPLETE_BLOCKADE";
   const W = canvas.width, H = canvas.height;
 
-  // ── 1. Compute every ship's raw position ──────────────────────────────
+  const liveIds = new Set(liveShips.map(s => s.id));
+
+  // ── 0. Migrate ships that just left the backend ────────────────────────
+  //   If their visual progress hasn't reached the destination yet, keep them
+  //   in departedShips so they animate smoothly to 1.0 before being removed.
+  for (const idStr of Object.keys(shipSmooth)) {
+    const id = Number(idStr);
+    if (!liveIds.has(id) && !departedShips[id]) {
+      if (shipSmooth[id] < 0.97 && shipMeta[id]) {
+        departedShips[id] = true;   // continue animating
+      } else {
+        frontendArrivals++;         // already at destination, count it now
+        delete shipSmooth[id];
+        delete shipMeta[id];
+      }
+    }
+  }
+  // Clean up fully-arrived departed ships
+  for (const idStr of Object.keys(departedShips)) {
+    const id = Number(idStr);
+    if ((shipSmooth[id] ?? 0) >= 0.97) {
+      frontendArrivals++;           // visual journey complete → count as arrived
+      delete departedShips[id];
+      delete shipSmooth[id];
+      delete shipMeta[id];
+    }
+  }
+
+  // ── 1. Build render items ──────────────────────────────────────────────
   const items = [];
+
+  // Live ships
   for (const ship of liveShips) {
     const rid = ship.route_id;
     if (!SPATHS[rid]) continue;
-
-    let pos;
-    if (weatherHold || blockadeHold) {
-      pos = schematicXY(rid, 0);
-    } else {
-      const p = geoProgress(ship.lat, ship.lon, rid);
-      pos = schematicXY(rid, p);
-    }
-    if (!pos) continue;
-
     const dir   = RDEFS[rid]?.dir;
     const color = (blockadeHold || ship.status === "blocked") ? TC.blocked : (TC[ship.type] || TC.PANAMAX);
-    const alpha = (weatherHold || blockadeHold) ? 0.30 : (ship.status === "waiting" ? 0.45 : 0.9);
-    items.push({ ship, pos: [pos[0], pos[1]], dir, color, alpha });
+
+    // Always record metadata so we can draw after departure
+    shipMeta[ship.id] = { rid, dir, type: ship.type, color };
+
+    let rawProg;
+    if (weatherHold || blockadeHold || ship.status !== "in_transit") {
+      rawProg = 0;
+    } else {
+      rawProg = Math.max(0, Math.min(1, ship.progress));
+    }
+
+    const alpha     = (weatherHold || blockadeHold) ? 0.30 : (ship.status !== "in_transit" ? 0.45 : 0.9);
+    const inTransit = ship.status === "in_transit" && !weatherHold && !blockadeHold;
+    items.push({ id: ship.id, rid, dir, type: ship.type, color, alpha, inTransit, rawProg, pos: [0, 0] });
   }
 
-  // ── 2. Anti-collision in the shared lane segment ──────────────────────
-  //   In the lane region (laneL..laneR) all outbound ships share one Y and
-  //   all inbound ships share another, so the only axis that matters is X.
-  //   Sort by "who's in front" and push any follower back if too close.
-  const laneL  = LAY.laneL * W;
-  const laneR  = LAY.laneR * W;
-  const GAP    = 28;              // min pixels between ship centres
+  // Departed ships — target is always 1.0 so they glide to destination
+  for (const idStr of Object.keys(departedShips)) {
+    const id   = Number(idStr);
+    const meta = shipMeta[id];
+    if (!meta || !SPATHS[meta.rid]) { delete departedShips[id]; continue; }
+    items.push({ id, rid: meta.rid, dir: meta.dir, type: meta.type, color: meta.color, alpha: 0.75,
+                 inTransit: true, rawProg: 1.0, pos: [0, 0], isDeparted: true });
+  }
+
+  // ── 2. Progress-based smoothing ────────────────────────────────────────
+  //   • New ships always start at 0 (never teleport mid-route).
+  //   • Advances at most MAX_STEP per frame — this is the key constraint that
+  //     prevents dashing and overtaking.  When a ship is held back by the
+  //     collision system, its server progress can race ahead, but the visual
+  //     only ever catches up at MAX_STEP/frame.  When unconstrained, the gap
+  //     closes gradually — never a single-frame jump.
+  //   • departedShips (step 0) handles ships removed by the backend before
+  //     their visual reaches the destination, so no pop-disappearance either.
+  const EASE     = 0.25;
+  const MAX_STEP = 0.010;   // max visual progress gain per frame (~0.6 %/frame at 60 fps)
+
+  for (const item of items) {
+    if (!item.inTransit) {
+      // Waiting / blocked ships sit at origin
+      shipSmooth[item.id] = 0;
+      item.prog = 0;
+      const rawPos = schematicXY(item.rid, 0);
+      if (rawPos) { item.pos[0] = rawPos[0]; item.pos[1] = rawPos[1]; }
+      continue;
+    }
+
+    const prev = shipSmooth[item.id];
+    const raw  = item.rawProg;
+
+    let sProg;
+    if (prev === undefined) {
+      sProg = 0;   // always spawn at origin — no mid-route pop
+    } else {
+      const delta   = (raw - prev) * EASE;
+      // Clamp to MAX_STEP so no frame can jump far enough to overtake a leader
+      sProg = prev + Math.max(-MAX_STEP, Math.min(MAX_STEP, delta));
+    }
+    shipSmooth[item.id] = sProg;
+    item.prog = sProg;
+
+    const sPos = schematicXY(item.rid, sProg);
+    if (sPos) { item.pos[0] = sPos[0]; item.pos[1] = sPos[1]; }
+  }
+
+  // ── 3. Collision gap enforcement on smoothed positions ────────────────
+  const GAP = 30;
 
   for (const direction of ["out", "in"]) {
-    const group = items.filter(
-      s => s.dir === direction && s.pos[0] >= laneL && s.pos[0] <= laneR
-    );
+    const group = items.filter(s => s.dir === direction && s.inTransit && s.pos[0] !== 0);
     if (group.length < 2) continue;
 
     if (direction === "out") {
-      // Outbound moves left→right; leader has the highest X
       group.sort((a, b) => b.pos[0] - a.pos[0]);
       for (let i = 1; i < group.length; i++) {
         const maxX = group[i - 1].pos[0] - GAP;
-        if (group[i].pos[0] > maxX) group[i].pos[0] = Math.max(laneL, maxX);
+        if (group[i].pos[0] > maxX) {
+          const cX    = Math.max(0, maxX);
+          const cProg = backComputeProg(group[i].rid, cX, "out");
+          const cPos  = schematicXY(group[i].rid, cProg);
+          if (cPos) { group[i].pos[0] = cPos[0]; group[i].pos[1] = cPos[1]; }
+          shipSmooth[group[i].id] = cProg;
+        }
       }
     } else {
-      // Inbound moves right→left; leader has the lowest X
       group.sort((a, b) => a.pos[0] - b.pos[0]);
       for (let i = 1; i < group.length; i++) {
         const minX = group[i - 1].pos[0] + GAP;
-        if (group[i].pos[0] < minX) group[i].pos[0] = Math.min(laneR, minX);
+        if (group[i].pos[0] < minX) {
+          const cX    = Math.min(W, minX);
+          const cProg = backComputeProg(group[i].rid, cX, "in");
+          const cPos  = schematicXY(group[i].rid, cProg);
+          if (cPos) { group[i].pos[0] = cPos[0]; group[i].pos[1] = cPos[1]; }
+          shipSmooth[group[i].id] = cProg;
+        }
       }
     }
   }
 
-  // ── 3. Draw ───────────────────────────────────────────────────────────
+  // ── 4. Draw ───────────────────────────────────────────────────────────
   ctx.save();
-  for (const { ship, pos, dir, color, alpha } of items) {
-    drawTankerIcon(pos[0], pos[1], ship.type, color, alpha, dir === "out");
+  for (const item of items) {
+    if (!item.pos || (item.pos[0] === 0 && item.pos[1] === 0)) continue;
+    drawTankerIcon(item.pos[0], item.pos[1], item.type, item.color, item.alpha, item.dir === "out");
   }
   ctx.restore();
 }
@@ -780,7 +893,6 @@ function frame() {
 const el = {
   duration:   document.getElementById("duration"),
   arrival:    document.getElementById("arrival"),
-  capacity:   document.getElementById("capacity"),
   disruption: document.getElementById("disruption"),
   mitigation: document.getElementById("mitigation"),
   speed:      document.getElementById("speed"),
@@ -802,8 +914,8 @@ const el = {
 
 function updateStats(payload) {
   el.simTime.textContent    = `${payload.sim_time_hours.toFixed(1)}h`;
-  el.arrivals.textContent   = String(payload.stats.total_arrivals);
-  el.completed.textContent  = String(payload.stats.total_completed);
+  el.arrivals.textContent   = String(frontendArrivals);
+  el.completed.textContent  = String(payload.stats.total_deployed ?? 0);
   el.queue.textContent      = String(payload.stats.queue_length);
   el.transit.textContent    = String(payload.stats.in_transit);
   el.avgWait.textContent    = `${payload.stats.avg_wait_hours.toFixed(2)}h`;
@@ -847,7 +959,7 @@ async function fetchAndRenderState() {
     if (!res.ok) return;
     const payload = await res.json();
     updateStats(payload);
-    liveShips = payload.ships || [];
+    if (payload.running && !simStopping) liveShips = payload.ships || [];
   } catch { /* keep polling */ }
 }
 
@@ -867,8 +979,23 @@ async function postJSON(url, body = null) {
   return res.json();
 }
 
+/* ---------- Disruption → tanker deployment map ---------- */
+const DISRUPTION_TANKERS = {
+  NONE:              { export_count: 6, import_count: 6 },   // 12 total
+  PARTIAL_BLOCKADE:  { export_count: 2, import_count: 4 },   //  6 total
+  COMPLETE_BLOCKADE: { export_count: 0, import_count: 0 },   //  0 total
+  WEATHER_DELAY:     { export_count: 3, import_count: 3 },   //  6 total
+};
+
 /* Controls */
 el.start.addEventListener("click", async () => {
+  // Release the stop guard and wipe any residual ship state from the previous run
+  simStopping = false;
+  liveShips   = [];
+  for (const k of Object.keys(shipSmooth))    delete shipSmooth[k];
+  for (const k of Object.keys(shipMeta))      delete shipMeta[k];
+  for (const k of Object.keys(departedShips)) delete departedShips[k];
+  frontendArrivals = 0;
   // Clear any previous session timer
   if (simStopTimer) { clearTimeout(simStopTimer); simStopTimer = null; }
 
@@ -881,13 +1008,19 @@ el.start.addEventListener("click", async () => {
   weatherPaused      = false;
   weatherVisualEnd   = activeDisruption === "WEATHER_DELAY" ? Date.now() + 10000 : 0;
 
+  const tankerCfg = DISRUPTION_TANKERS[activeDisruption] || DISRUPTION_TANKERS.NONE;
+
   await postJSON("/start", {
     duration_hours:          Number(el.duration.value),
     arrival_rate_per_hour:   Number(el.arrival.value),
-    max_concurrent_transits: Number(el.capacity.value),
+    export_count:            tankerCfg.export_count,
+    import_count:            tankerCfg.import_count,
     disruption:              el.disruption.value,
     mitigation:              el.mitigation.value,
   });
+  // Apply the current dropdown speed immediately so the backend doesn't start at its
+  // internal default (1.0) when the user has a different speed selected.
+  await postJSON("/speed", { speed: Number(el.speed.value) });
 
   // Weather delay: pause the backend so ships truly don't move during the storm,
   // then resume after 10 seconds so ships start fresh from port.
@@ -902,20 +1035,28 @@ el.start.addEventListener("click", async () => {
 
   // Auto-stop after 60 seconds of wall-clock time
   simStopTimer = setTimeout(async () => {
+    resetUI();                         // wipe ships instantly, sets simStopping = true
     try { await postJSON("/stop"); } catch {}
-    resetUI();
+    // simStopping stays true — only Start clears it
   }, 60000);
 });
 el.pause.addEventListener("click",  () => postJSON("/pause"));
 el.resume.addEventListener("click", () => postJSON("/resume"));
 el.stop.addEventListener("click", async () => {
-  await postJSON("/stop");
-  resetUI();
+  resetUI();                           // wipe ships instantly, sets simStopping = true
+  try { await postJSON("/stop"); } catch {}
+  // simStopping stays true — only Start clears it
 });
 el.speed.addEventListener("change", () => postJSON("/speed", { speed: Number(el.speed.value) }));
 
 function resetUI() {
+  simStopping = true;   // block WS/poll from re-populating ships during teardown
   liveShips = [];
+  // Clear all per-ship visual state so departed ships don't ghost into the next session
+  for (const k of Object.keys(shipSmooth))    delete shipSmooth[k];
+  for (const k of Object.keys(shipMeta))      delete shipMeta[k];
+  for (const k of Object.keys(departedShips)) delete departedShips[k];
+  frontendArrivals = 0;
   if (simStopTimer) { clearTimeout(simStopTimer); simStopTimer = null; }
   simStartWall       = 0;
   simRunning         = false;
@@ -948,7 +1089,7 @@ function connectSocket() {
   ws.onmessage = (e) => {
     const p = JSON.parse(e.data);
     updateStats(p);
-    liveShips = p.ships || [];
+    if (p.running && !simStopping) liveShips = p.ships || [];
   };
   ws.onerror = () => startPollingFallback();
   ws.onclose = () => { startPollingFallback(); setTimeout(connectSocket, 1000); };
