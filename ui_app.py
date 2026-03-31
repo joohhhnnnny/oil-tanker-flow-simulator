@@ -130,6 +130,10 @@ class ShipTrack:
     progress: float = 0.0
     waiting_time: float = 0.0
     created_at: float = 0.0
+    spawn_wall_time: float = 0.0       # wall-clock seconds when ship was created
+    transit_start_wall: float = 0.0    # wall-clock seconds when ship entered transit (0 = not yet)
+    pause_delay_started_wall: float = 0.0
+    extra_delay_wall: float = 0.0
 
 
 class StartRequest(BaseModel):
@@ -139,6 +143,7 @@ class StartRequest(BaseModel):
     import_count: int = Field(default=6, ge=0, le=20)
     disruption: str = Field(default="NONE")
     mitigation: str = Field(default="NONE")
+    start_paused: bool = Field(default=False)
 
 
 class SpeedRequest(BaseModel):
@@ -153,6 +158,7 @@ class WebSimulationBridge:
         self._thread: Optional[threading.Thread] = None
         self._running = False
         self._paused = False
+        self._pause_reason = "manual"
         self._speed = 1.0
 
         self.env: Optional[simpy.Environment] = None
@@ -180,6 +186,8 @@ class WebSimulationBridge:
         self._total_deployed = 0
         self._oil_delivered_total = 0
         self._wait_times: list[float] = []
+        self._transit_delays: list[float] = []   # actual - baseline transit time per completed ship
+        self._completed_delay_real_secs: list[float] = []
         self._export_count = 6
         self._import_count = 6
 
@@ -196,10 +204,13 @@ class WebSimulationBridge:
             self._total_deployed = 0
             self._oil_delivered_total = 0
             self._wait_times.clear()
+            self._transit_delays.clear()
+            self._completed_delay_real_secs.clear()
             self._export_count = req.export_count
             self._import_count = req.import_count
             self._running = True
-            self._paused = False
+            self._paused = req.start_paused
+            self._pause_reason = "weather" if req.start_paused else "manual"
 
         self._thread = threading.Thread(target=self._run_simulation, daemon=True)
         self._thread.start()
@@ -208,17 +219,33 @@ class WebSimulationBridge:
         with self._lock:
             self._running = False
             self._paused = False
+            self._pause_reason = "manual"
         if self._thread:
             self._thread.join(timeout=1.0)
             self._thread = None
 
-    def pause(self) -> None:
+    def pause(self, reason: str = "manual") -> None:
         with self._lock:
+            if self._paused:
+                return
             self._paused = True
+            self._pause_reason = reason
+            if reason == "weather":
+                now_wall = time.time()
+                for track in self._ship_tracks.values():
+                    if track.status == "in_transit" and track.pause_delay_started_wall <= 0.0:
+                        track.pause_delay_started_wall = now_wall
 
     def resume(self) -> None:
         with self._lock:
+            if self._pause_reason == "weather":
+                now_wall = time.time()
+                for track in self._ship_tracks.values():
+                    if track.pause_delay_started_wall > 0.0:
+                        track.extra_delay_wall += max(0.0, now_wall - track.pause_delay_started_wall)
+                        track.pause_delay_started_wall = 0.0
             self._paused = False
+            self._pause_reason = "manual"
 
     def set_speed(self, speed: float) -> None:
         with self._lock:
@@ -244,13 +271,9 @@ class WebSimulationBridge:
                 capacity_reduction=1.0,
             )
         elif disruption == DisruptionType.WEATHER_DELAY:
-            disruption_config = DisruptionConfig(
-                disruption_type=disruption,
-                start_time_hours=0.5,
-                duration_hours=200.0,
-                capacity_reduction=0.3,
-                transit_time_multiplier=2.0,
-            )
+            # Weather delay is handled as a fixed wall-clock hold in the web UI.
+            # Do not apply an additional backend transit slowdown after the hold.
+            disruption_config = DisruptionConfig(disruption_type=DisruptionType.NONE)
         else:
             disruption_config = DisruptionConfig(disruption_type=DisruptionType.NONE)
 
@@ -374,6 +397,7 @@ class WebSimulationBridge:
                 heading=90.0 if direction == "eastbound" else 270.0,
                 speed_knots=speed_knots,
                 created_at=self.env.now,
+                spawn_wall_time=time.time(),
             )
             self._refresh_waiting_positions()
 
@@ -407,6 +431,7 @@ class WebSimulationBridge:
             if track:
                 track.status = "in_transit"
                 track.waiting_time = wait_time
+                track.transit_start_wall = time.time()
 
             route_id = track.route_id if track else ""
             route_def = self._route_by_id.get(route_id)
@@ -443,6 +468,21 @@ class WebSimulationBridge:
             self._total_arrivals += 1
             self._total_completed += 1
             self._oil_delivered_total += tanker.cargo_barrels
+            # Record how much longer this transit took vs. the baseline route time
+            self._transit_delays.append(max(0.0, transit_time - route_time))
+
+            if track:
+                wait_delay_real = 0.0
+                if track.spawn_wall_time > 0.0 and track.transit_start_wall > 0.0:
+                    wait_delay_real = max(0.0, track.transit_start_wall - track.spawn_wall_time)
+
+                pause_delay_real = track.extra_delay_wall
+                if track.pause_delay_started_wall > 0.0:
+                    pause_delay_real += max(0.0, time.time() - track.pause_delay_started_wall)
+
+                total_delay_real = wait_delay_real + pause_delay_real
+                if total_delay_real > 0.05:
+                    self._completed_delay_real_secs.append(total_delay_real)
 
             self._ship_tracks.pop(tanker.tanker_id, None)
             self._active_tankers.pop(tanker.tanker_id, None)
@@ -514,7 +554,31 @@ class WebSimulationBridge:
         # Complete blockade: strait is fully closed — no ships should register as in-transit
         if self.strait and self.strait._blocked:
             in_transit = 0
-        avg_wait = (sum(self._wait_times) / len(self._wait_times)) if self._wait_times else 0.0
+        wait_samples = list(self._wait_times)
+        for ship in self._ship_tracks.values():
+            if ship.status in {"waiting", "blocked"}:
+                wait_samples.append(max(0.0, sim_time - ship.created_at))
+        avg_wait = (sum(wait_samples) / len(wait_samples)) if wait_samples else 0.0
+        avg_transit_delay = (sum(self._transit_delays) / len(self._transit_delays)) if self._transit_delays else 0.0
+        now_wall = time.time()
+        delay_samples = list(self._completed_delay_real_secs)
+        for s in self._ship_tracks.values():
+            if s.spawn_wall_time <= 0:
+                continue
+
+            if s.transit_start_wall > 0:
+                delay_real = max(0.0, s.transit_start_wall - s.spawn_wall_time)
+            else:
+                delay_real = max(0.0, now_wall - s.spawn_wall_time)
+
+            delay_real += s.extra_delay_wall
+            if s.pause_delay_started_wall > 0.0:
+                delay_real += max(0.0, now_wall - s.pause_delay_started_wall)
+
+            if delay_real > 0.05:
+                delay_samples.append(delay_real)
+
+        avg_delay_real_secs = (sum(delay_samples) / len(delay_samples)) if delay_samples else 0.0
         throughput = (self._total_completed / sim_time * 24.0) if sim_time > 0 else 0.0
 
         return {
@@ -531,6 +595,8 @@ class WebSimulationBridge:
                 "queue_length": queue_length,
                 "in_transit": in_transit,
                 "avg_wait_hours": avg_wait,
+                "avg_transit_delay_hours": avg_transit_delay,
+                "avg_delay_real_secs": avg_delay_real_secs,
                 "throughput_per_day": throughput,
                 "oil_delivered_barrels": self._oil_delivered_total,
             },
@@ -550,6 +616,7 @@ class WebSimulationBridge:
                     "speed_knots": s.speed_knots,
                     "progress": s.progress,
                     "waiting_time": s.waiting_time,
+                    "cargo_barrels": s.cargo_barrels,
                 }
                 for s in self._ship_tracks.values()
             ],
@@ -625,8 +692,8 @@ async def start_sim(req: StartRequest) -> dict[str, str]:
 
 
 @app.post("/pause")
-async def pause_sim() -> dict[str, str]:
-    bridge.pause()
+async def pause_sim(reason: str = "manual") -> dict[str, str]:
+    bridge.pause(reason=reason)
     return {"status": "paused"}
 
 

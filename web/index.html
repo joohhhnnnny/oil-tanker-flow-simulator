@@ -16,105 +16,455 @@
             sans: ["Manrope", "sans-serif"],
             mono: ["JetBrains Mono", "monospace"],
           },
-          colors: {
-            canvas: "#e8f1f4",
-            panel: "#f9faf8",
-            ink: "#14303d",
-            accent: "#0b5f79",
-            rust: "#a64d35",
-          },
-          boxShadow: {
-            panel: "0 12px 30px rgba(20, 48, 61, 0.12)",
-          },
         },
       },
     };
   </script>
   <style>
-    html, body { height: 100%; margin: 0; }
-    #simCanvas { display: block; height: 100%; width: 100%; }
+    :root {
+      --bg-page:    #0d1117;
+      --bg-panel:   #161b22;
+      --bg-section: #1c2330;
+      --bg-input:   #1c2330;
+      --border:     #30363d;
+      --border-l:   #3d4a5c;
+      --text-1:     #f0f6fc;
+      --text-2:     #8b949e;
+      --text-3:     #6e7681;
+      --accent:     #58a6ff;
+      --accent-dim: #1f3a5f;
+      --green:      #3fb950;
+      --yellow:     #d29922;
+      --orange:     #db6d28;
+      --red:        #f85149;
+      --oil:        #e8a046;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; background: var(--bg-page); color: var(--text-1); }
+    body { font-family: Manrope, sans-serif; }
+    #simCanvas { display: block; height: 100%; width: 100%; border-radius: 16px; }
+
+    .app-page {
+      height: 100vh;
+      height: 100dvh;
+      width: 100%;
+      padding: 12px;
+    }
+
+    .app-frame {
+      position: relative;
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      height: 100%;
+      min-height: 0;
+      overflow: hidden;
+      border-radius: 18px;
+      border: 1px solid #21262d;
+      background: var(--bg-page);
+    }
+
+    .app-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: 1fr;
+      height: 100%;
+      min-height: 0;
+    }
+
+    .app-layout {
+      display: flex;
+      height: 100%;
+      min-height: 0;
+    }
+
+    .sidebar {
+      width: 360px;
+      min-width: 360px;
+      height: 100%;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+      background: var(--bg-panel);
+      border-right: 1px solid var(--border);
+      padding: 20px 18px 28px 20px;
+      flex-shrink: 0;
+    }
+
+    .canvas-pane {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      padding: 18px;
+      background: linear-gradient(180deg, #0f151d 0%, #0b1016 100%);
+    }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 5px; }
+    ::-webkit-scrollbar-track { background: var(--bg-panel); }
+    ::-webkit-scrollbar-thumb { background: var(--border-l); border-radius: 3px; }
+
+    /* ── Inputs & selects ── */
+    .dk-input {
+      width: 100%; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--bg-input); color: var(--text-1);
+      padding: 7px 10px; font-family: "JetBrains Mono", monospace; font-size: 13px;
+      outline: none; transition: border-color .2s;
+    }
+    .dk-input:focus { border-color: var(--accent); }
+
+    /* ── Labels ── */
+    .dk-label {
+      font-size: 10px; font-weight: 700; text-transform: uppercase;
+      letter-spacing: .12em; color: var(--text-3);
+    }
+
+    /* ── Buttons ── */
+    .btn-start  { background: #1a7f3c; color: #fff; }
+    .btn-start:hover { background: #22a04a; }
+    .btn-stop   { background: #b62324; color: #fff; }
+    .btn-stop:hover  { background: #da3633; }
+    .btn-ghost  { background: var(--bg-section); border: 1px solid var(--border); color: var(--text-2); }
+    .btn-ghost:hover { border-color: var(--border-l); color: var(--text-1); }
+    .dk-btn     { border-radius: 8px; padding: 7px 12px; font-size: 13px; font-weight: 700; cursor: pointer; transition: background .15s, border-color .15s; border: none; }
+
+    /* ── Section cards ── */
+    .dk-card    { background: var(--bg-section); border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-top: 10px; }
+    .dk-card-title { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .14em; color: var(--text-3); margin-bottom: 8px; }
+
+    /* ── Metrics grid ── */
+    .metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 0; font-size: 13px; }
+    .metric-key  { color: var(--text-2); padding: 2px 0; }
+    .metric-val  { font-family: "JetBrains Mono", monospace; font-weight: 700; color: var(--text-1); padding: 2px 0; }
+
+    /* ── Oil market card ── */
+    .oil-card {
+      background: #0d2318;
+      border: 1px solid #1a3d28;
+      border-radius: 12px;
+      padding: 12px;
+      margin-top: 10px;
+      transition: background .4s, color .4s, border-color .4s;
+    }
+    .oil-card-title {
+      font-size: 10px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .14em;
+      color: var(--green);
+      margin-bottom: 8px;
+      transition: color .4s;
+    }
+    .oil-market-label {
+      color: color-mix(in srgb, var(--green) 78%, white 22%);
+      font-size: 13px;
+      transition: color .4s;
+    }
+    .oil-market-value {
+      font-family: "JetBrains Mono", monospace;
+      font-size: 13px;
+      color: var(--green);
+      transition: color .4s;
+    }
+    .oil-card.warn-yellow { background:#1e1800; border-color:#3d3000; }
+    .oil-card.warn-yellow .oil-card-title,
+    .oil-card.warn-yellow .oil-market-label,
+    .oil-card.warn-yellow .oil-market-value { color: var(--yellow); }
+    .oil-card.warn-orange { background:#1e1000; border-color:#3d2000; }
+    .oil-card.warn-orange .oil-card-title,
+    .oil-card.warn-orange .oil-market-label,
+    .oil-card.warn-orange .oil-market-value { color: var(--orange); }
+    .oil-card.warn-red { background:#200d0d; border-color:#4d1a1a; }
+    .oil-card.warn-red .oil-card-title,
+    .oil-card.warn-red .oil-market-label,
+    .oil-card.warn-red .oil-market-value { color: var(--red); }
+
+    /* ── Live Dashboard ── */
+    #liveDashboard { display: block; padding-bottom: 6px; }
+    .chart-canvas-wrap { position: relative; }
+
+    .chart-block {
+      background: var(--bg-section); border: 1px solid var(--border);
+      border-radius: 12px; padding: 8px 10px; margin-top: 10px;
+    }
+    .chart-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; }
+    .chart-label  { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; color: var(--text-3); }
+    .chart-val    { font-size: 13px; font-weight: 700; font-family: "JetBrains Mono", monospace; color: var(--oil); }
+    .radar-chart-val { color: var(--green); transition: color .4s; }
+    .radar-chart-val.warn-yellow { color: var(--yellow); }
+    .radar-chart-val.warn-orange { color: var(--orange); }
+    .radar-chart-val.warn-red { color: var(--red); }
+
+    /* ── Cause-Effect banner ── */
+    #causeEffect {
+      margin-top: 10px; border-radius: 8px; padding: 7px 12px;
+      font-size: 11px; font-weight: 600; text-align: center;
+      background: #0d2318; color: var(--green); border: 1px solid #1a3d28;
+      min-height: 28px; line-height: 1.4;
+      transition: background .4s, color .4s, border-color .4s;
+    }
+    #causeEffect.warn-yellow { background:#1e1800; color:#d29922; border-color:#3d3000; }
+    #causeEffect.warn-orange { background:#1e1000; color:#db6d28; border-color:#3d2000; }
+    #causeEffect.warn-red    { background:#200d0d; color:#f85149; border-color:#4d1a1a; }
+    @keyframes pulse-red { 0%,100%{opacity:1} 50%{opacity:0.55} }
+    #causeEffect.warn-red { animation: pulse-red 1.4s infinite; }
+
+    /* ── Widgets ── */
+    .widget-row   { display: grid; grid-template-columns: repeat(3,1fr); gap: 6px; margin-top: 8px; }
+    .widget       { background: var(--bg-section); border: 1px solid var(--border); border-radius: 10px; padding: 8px 6px; text-align: center; }
+    .widget-label { font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: var(--text-3); margin-bottom: 4px; }
+    .widget-value { font-size: 14px; font-weight: 800; font-family: "JetBrains Mono", monospace; color: var(--text-1); }
+    .risk-low      { color: var(--green); }
+    .risk-moderate { color: var(--yellow); }
+    .risk-high     { color: var(--orange); }
+    .risk-critical { color: var(--red); }
+
+    .blockage-bar-wrap { height: 4px; background: var(--border); border-radius: 2px; margin-top: 5px; overflow: hidden; }
+    .blockage-bar-fill { height: 100%; border-radius: 2px; background: var(--orange); transition: width .4s; }
+
+    /* ── Discussion Section ── */
+    .discussion-card {
+      background: var(--bg-section);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .discussion-header {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 10px 14px;
+      background: linear-gradient(135deg, #1a2332 0%, #162029 100%);
+      border-bottom: 1px solid var(--border);
+    }
+    .discussion-icon {
+      color: var(--accent);
+      font-size: 10px;
+    }
+    .discussion-title {
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .13em;
+      color: var(--accent);
+    }
+    .discussion-body {
+      padding: 14px;
+      font-size: 12.5px;
+      line-height: 1.65;
+      color: var(--text-2);
+    }
+    .discussion-body h3 {
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: .10em;
+      color: var(--text-1);
+      margin: 14px 0 6px 0;
+      padding-bottom: 4px;
+      border-bottom: 1px solid var(--border);
+    }
+    .discussion-body h3:first-child { margin-top: 0; }
+    .discussion-body p {
+      margin: 0 0 8px 0;
+    }
+    .discussion-body .disc-metric {
+      font-family: "JetBrains Mono", monospace;
+      font-weight: 700;
+      color: var(--text-1);
+      font-size: 12px;
+    }
+    .discussion-body .disc-positive { color: var(--green); }
+    .discussion-body .disc-caution  { color: var(--yellow); }
+    .discussion-body .disc-warning  { color: var(--orange); }
+    .discussion-body .disc-critical { color: var(--red); }
+
+    @media (max-width: 1024px) {
+      .app-page {
+        min-height: 100vh;
+        min-height: 100dvh;
+        height: auto;
+      }
+
+      .app-layout {
+        flex-direction: column;
+      }
+
+      .sidebar {
+        width: 100%;
+        min-width: 0;
+        height: auto;
+        max-height: min(48dvh, 520px);
+        border-right: 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .canvas-pane {
+        min-height: 52dvh;
+        padding: 12px;
+      }
+
+      .widget-row {
+        grid-template-columns: 1fr;
+      }
+    }
   </style>
 </head>
-<body class="h-full bg-canvas text-ink font-sans">
-  <div class="h-full w-full p-3 md:p-4">
-    <div class="relative h-full overflow-hidden rounded-2xl border border-slate-300/70 bg-gradient-to-br from-slate-100 via-cyan-50 to-amber-50">
-      <div class="pointer-events-none absolute -top-16 -left-10 h-56 w-56 rounded-full bg-cyan-300/25 blur-3xl"></div>
-      <div class="pointer-events-none absolute bottom-0 right-0 h-64 w-64 rounded-full bg-orange-300/20 blur-3xl"></div>
+<body>
+  <div class="app-page">
+    <div class="app-frame">
 
-      <div class="relative grid h-full grid-cols-1 lg:grid-cols-[360px_1fr]">
-        <aside class="h-full overflow-y-auto border-b border-slate-300/70 bg-panel/90 p-5 shadow-panel lg:border-b-0 lg:border-r">
-          <h1 class="text-2xl font-extrabold tracking-tight">Strait Flow Control</h1>
-          <p class="mt-1 text-sm text-slate-600">FastAPI + SimPy · Canvas 2-D View</p>
+      <div class="app-grid">
+        <!-- On large screens: [360px aside | remaining main] -->
+        <div class="app-layout">
 
-          <div class="mt-5 grid gap-3">
-            <label class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500" for="duration">Duration (hours)</label>
-            <input id="duration" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-sm" type="number" min="1" value="168" />
+          <!-- ── Sidebar ─────────────────────────────────────────── -->
+          <aside class="sidebar">
 
-            <label class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500" for="arrival">Arrival Rate (/hour)</label>
-            <input id="arrival" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-sm" type="number" min="0.1" step="0.1" value="0.7" />
+            <h1 style="font-size:20px;font-weight:800;color:var(--text-1);letter-spacing:-.01em;margin:0;">Strait Flow Control</h1>
+            <p style="margin:4px 0 0;font-size:12px;color:var(--text-3);">FastAPI + SimPy · Canvas 2-D View</p>
 
-            <label class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500" for="disruption">Disruption</label>
-            <select id="disruption" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-sm">
-              <option value="NONE">No Disruption</option>
-              <option value="PARTIAL_BLOCKADE">Partial Blockade</option>
-              <option value="COMPLETE_BLOCKADE">Complete Blockade</option>
-              <option value="WEATHER_DELAY">Weather Delay</option>
-            </select>
+            <!-- Controls -->
+            <div style="margin-top:16px;display:grid;gap:8px;">
+              <label class="dk-label" for="disruption">Disruption</label>
+              <select id="disruption" class="dk-input">
+                <option value="NONE">No Disruption</option>
+                <option value="PARTIAL_BLOCKADE">Partial Blockade</option>
+                <option value="COMPLETE_BLOCKADE">Complete Blockade</option>
+                <option value="WEATHER_DELAY">Weather Delay</option>
+              </select>
 
-            <label class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500" for="mitigation">Mitigation</label>
-            <select id="mitigation" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-sm">
-              <option value="NONE">None</option>
-              <option value="PRIORITY_SCHEDULING">Priority Scheduling</option>
-              <option value="ALTERNATIVE_ROUTING">Alternative Routing</option>
-            </select>
+              <label class="dk-label" for="mitigation">Mitigation</label>
+              <select id="mitigation" class="dk-input">
+                <option value="NONE">None</option>
+                <option value="PRIORITY_SCHEDULING">Priority Scheduling</option>
+                <option value="ALTERNATIVE_ROUTING">Alternative Routing</option>
+              </select>
 
-            <label class="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500" for="speed">Speed</label>
-            <select id="speed" class="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 font-mono text-sm">
-              <option value="1">0.5x</option>
-              <option value="2" selected>1x</option>
-              <option value="4">2x</option>
-              <option value="10">5x</option>
-              <option value="20">10x</option>
-            </select>
-          </div>
-
-          <div class="mt-5 grid grid-cols-2 gap-2">
-            <button id="startBtn" class="rounded-xl bg-accent px-3 py-2 text-sm font-bold text-white transition hover:brightness-110">Start</button>
-            <button id="pauseBtn" class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50">Pause</button>
-            <button id="resumeBtn" class="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-700 transition hover:bg-slate-50">Resume</button>
-            <button id="stopBtn" class="rounded-xl bg-rust px-3 py-2 text-sm font-bold text-white transition hover:brightness-110">Stop</button>
-          </div>
-
-          <section class="mt-6 rounded-xl border border-slate-200 bg-white/90 p-3">
-            <h2 class="text-sm font-bold uppercase tracking-[0.12em] text-slate-600">Live Metrics</h2>
-            <div class="mt-2 grid grid-cols-2 gap-y-2 text-sm">
-              <span class="text-slate-500">Sim Time</span><strong id="simTime" class="font-mono">0.0h</strong>
-              <span class="text-slate-500">Arrivals</span><strong id="arrivals" class="font-mono">0</strong>
-              <span class="text-slate-500">Deployed</span><strong id="completed" class="font-mono">0</strong>
-              <span class="text-slate-500">Queue</span><strong id="queue" class="font-mono">0</strong>
-              <span class="text-slate-500">In Transit</span><strong id="transit" class="font-mono">0</strong>
-              <span class="text-slate-500">Avg Wait</span><strong id="avgWait" class="font-mono">0.00h</strong>
-              <span class="text-slate-500">Throughput</span><strong id="throughput" class="font-mono">0.00/day</strong>
-              <span class="text-slate-500">Status</span><strong id="status" class="font-mono">Stopped</strong>
+              <label class="dk-label" for="speed">Speed</label>
+              <select id="speed" class="dk-input">
+                <option value="1">0.5x</option>
+                <option value="2" selected>1x</option>
+                <option value="4">2x</option>
+                <option value="10">5x</option>
+                <option value="20">10x</option>
+              </select>
             </div>
-          </section>
 
-          <section class="mt-4 rounded-xl border border-amber-200/80 bg-amber-50/80 p-3">
-            <h2 class="text-sm font-bold uppercase tracking-[0.12em] text-amber-700">Oil Market</h2>
-            <div class="mt-2 grid grid-cols-2 gap-y-2 text-sm">
-              <span class="text-amber-700/70">Brent Crude</span><strong id="oilPrice" class="font-mono text-amber-900">$95.00/bbl</strong>
-              <span class="text-amber-700/70">Trend</span><strong id="oilTrend" class="font-mono text-amber-900">Stable</strong>
+            <!-- Action buttons -->
+            <div style="margin-top:14px;display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+              <button id="startBtn"  class="dk-btn btn-start">Start</button>
+              <button id="pauseBtn"  class="dk-btn btn-ghost">Pause</button>
+              <button id="resumeBtn" class="dk-btn btn-ghost">Resume</button>
+              <button id="stopBtn"   class="dk-btn btn-stop">Stop</button>
             </div>
-          </section>
-        </aside>
 
-        <main class="h-[52vh] min-h-[360px] lg:h-full">
-          <canvas id="simCanvas"></canvas>
-        </main>
+            <!-- Live Metrics -->
+            <div class="dk-card">
+              <div class="dk-card-title">Live Metrics</div>
+              <div class="metric-grid">
+                <span class="metric-key">Sim Time</span>   <strong id="simTime"    class="metric-val">0.0h</strong>
+                <span class="metric-key">Arrivals</span>   <strong id="arrivals"   class="metric-val">0</strong>
+                <span class="metric-key">Deployed</span>   <strong id="completed"  class="metric-val">0</strong>
+                <span class="metric-key">Queue</span>      <strong id="queue"      class="metric-val">0</strong>
+                <span class="metric-key">In Transit</span> <strong id="transit"    class="metric-val">0</strong>
+                <span class="metric-key">Avg Wait</span>   <strong id="avgWait"    class="metric-val">0.00h</strong>
+                <span class="metric-key">Crossing Time</span> <strong id="crossingTime" class="metric-val">6 - 12hrs</strong>
+                <span class="metric-key">Throughput</span> <strong id="throughput" class="metric-val">0.00/day</strong>
+                <span class="metric-key">Status</span>     <strong id="status"     class="metric-val">Stopped</strong>
+              </div>
+            </div>
+
+            <!-- Oil Market -->
+            <div id="oilMarketCard" class="oil-card">
+              <div class="oil-card-title">Oil Market</div>
+              <div class="metric-grid">
+                <span class="oil-market-label">Brent Crude</span>
+                <strong id="oilPrice" class="oil-market-value">$95.00/bbl</strong>
+                <span class="oil-market-label">Trend</span>
+                <strong id="oilTrend" class="oil-market-value">Stable</strong>
+              </div>
+            </div>
+
+            <!-- ── Live Dashboard ─────────────────────────────────── -->
+            <div id="liveDashboard" style="margin-top:4px;">
+
+              <!-- Cause → Effect banner -->
+              <div id="causeEffect">Awaiting simulation data…</div>
+
+              <!-- ① Web Chart -->
+              <div class="chart-block">
+                <div class="chart-header">
+                  <span class="chart-label">Web Chart</span>
+                  <span class="chart-val radar-chart-val" id="webChartState">Awaiting</span>
+                </div>
+                <div class="chart-canvas-wrap" style="height:190px"><canvas id="webRadarChart"></canvas></div>
+              </div>
+
+              <!-- ② Oil Price chart -->
+              <div class="chart-block">
+                <div class="chart-header">
+                  <span class="chart-label">Oil Price</span>
+                  <span class="chart-val" id="oilPriceVal">$95.00</span>
+                </div>
+                <div class="chart-canvas-wrap" style="height:85px"><canvas id="oilPriceChart"></canvas></div>
+              </div>
+
+              <!-- ③ Tanker Volume chart -->
+              <div class="chart-block">
+                <div class="chart-header">
+                  <span class="chart-label">Tankers In Transit</span>
+                  <span class="chart-val" id="barrelsTotalVal">0 · 0.0 Mbbl</span>
+                </div>
+                <div class="chart-canvas-wrap" style="height:95px"><canvas id="volumeChart"></canvas></div>
+              </div>
+
+              <!-- ④ Widgets: Risk / Blockage / Delay -->
+              <div class="widget-row">
+                <div class="widget">
+                  <div class="widget-label">Risk</div>
+                  <div class="widget-value risk-low" id="riskLevel">Low</div>
+                </div>
+                <div class="widget">
+                  <div class="widget-label">Blockage</div>
+                  <div class="widget-value" id="blockagePct">0%</div>
+                  <div class="blockage-bar-wrap"><div class="blockage-bar-fill" id="blockageBar" style="width:0%"></div></div>
+                </div>
+                <div class="widget">
+                  <div class="widget-label">Avg Delay</div>
+                  <div class="widget-value" id="delayTime">0s</div>
+                </div>
+              </div>
+
+            </div><!-- /liveDashboard -->
+
+            <!-- ── Discussion Section (shown after simulation ends) ── -->
+            <div id="discussionSection" style="display:none; margin-top:14px;">
+              <div class="discussion-card">
+                <div class="discussion-header">
+                  <span class="discussion-icon">&#9670;</span>
+                  <span class="discussion-title">Simulation Discussion</span>
+                </div>
+                <div id="discussionBody" class="discussion-body"></div>
+              </div>
+            </div>
+
+          </aside>
+
+          <!-- ── Canvas ─────────────────────────────────────────── -->
+          <main class="canvas-pane">
+            <canvas id="simCanvas"></canvas>
+          </main>
+
+        </div>
       </div>
     </div>
   </div>
 
-  <script src="/static/app.js?v=20260329c"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="/static/app.js?v=20260331"></script>
 </body>
 </html>

@@ -91,6 +91,12 @@ let frontendArrivals = 0;
 
 /* ---------- Stop-in-progress guard — blocks WS/poll from re-populating ships ---------- */
 let simStopping = false;
+let uiFrozen = false;
+let frozenWallTime = 0;
+let weatherResumeTimer = null;
+let manualPauseActive = false;
+let manualPauseStartedWall = 0;
+let logicalClockOffsetMs = 0;
 
 /* ---------- Simulation session state ---------- */
 let simStopTimer       = null;   // auto-stop after 60s real time
@@ -104,7 +110,219 @@ let disruptionLive     = false;  // current disruption_active from backend
 let oilPriceFrozen     = false;  // true once disruption ends — price stays at peak
 let pricePauseStart    = null;   // Date.now() when user-paused — freezes price clock
 let weatherVisualEnd   = 0;      // Date.now() + 10s  (weather visual clearing time)
+let weatherDelayStartWall = 0;   // Date.now() when the weather hold begins
 let currentOilPrice    = 95.0;   // live price $/bbl
+
+/* ---------- Chart state ---------- */
+let webRadarChart = null;
+let oilPriceChart = null;
+let volumeChart   = null;
+const chartHistory = {
+  labels:       [],   // sim_time_hours strings
+  oilPrice:     [],   // $/bbl
+  exportsLive:  [],   // outbound in-transit count
+  importsLive:  [],   // inbound  in-transit count
+};
+const CHART_MAX_PTS = 60;
+let _lastChartTime  = -1;   // track last pushed sim_time to avoid duplicate points
+let _lastChartSampleWall = -1;
+const CHART_SAMPLE_INTERVAL_MS = 500;
+const WEB_CHART_LABELS = [
+  ["Oil Price", "Level"],
+  ["Supply", "Level"],
+  ["Demand", "Level"],
+  ["Tanker", "Throughput"],
+  ["Disruption", "Severity"],
+  ["Transit", "Efficiency"],
+];
+const NORMALIZED_OIL_PRICE_MAX = 150;
+const NORMAL_FLOWING_BARRELS = 6_000_000;
+const NORMAL_THROUGHPUT_PER_DAY = 3.0;
+const DEFAULT_DURATION_HOURS = 168;
+const CROSSING_TIME_RANGES = {
+  NONE: "6 - 12hrs",
+  PARTIAL_BLOCKADE: "12 - 36hrs",
+  COMPLETE_BLOCKADE: "24 - 120hrs",
+  WEATHER_DELAY: "8 - 24hrs",
+};
+const WEB_RADAR_VALUE_EASE = 0.16;
+const WEB_RADAR_COLOR_EASE = 0.12;
+const WEB_RADAR_STRESS_EASE = 0.14;
+const WEB_RADAR_EPSILON = 0.05;
+const WEB_CHART_TONES = {
+  "": {
+    border: [63, 185, 80, 1],
+    fill: [63, 185, 80, 0.16],
+  },
+  "warn-yellow": {
+    border: [210, 153, 34, 1],
+    fill: [210, 153, 34, 0.16],
+  },
+  "warn-orange": {
+    border: [219, 109, 40, 1],
+    fill: [219, 109, 40, 0.16],
+  },
+  "warn-red": {
+    border: [248, 81, 73, 1],
+    fill: [248, 81, 73, 0.16],
+  },
+};
+const webRadarState = {
+  awaiting: true,
+  currentData: [0, 0, 0, 0, 0, 0],
+  targetData: [0, 0, 0, 0, 0, 0],
+  currentStress: 0,
+  targetStress: 0,
+  currentToneClass: "",
+  targetToneClass: "",
+  currentTone: {
+    border: [...WEB_CHART_TONES[""].border],
+    fill: [...WEB_CHART_TONES[""].fill],
+  },
+  targetTone: {
+    border: [...WEB_CHART_TONES[""].border],
+    fill: [...WEB_CHART_TONES[""].fill],
+  },
+};
+
+function clockNow() {
+  if (uiFrozen && frozenWallTime > 0) return frozenWallTime;
+  const wallNow = (manualPauseActive && manualPauseStartedWall > 0) ? manualPauseStartedWall : Date.now();
+  return wallNow - logicalClockOffsetMs;
+}
+
+function clampPct(value) {
+  return Math.max(0, Math.min(100, value));
+}
+
+function currentScenarioForCrossingTime() {
+  if (simRunning || simPaused || uiFrozen) return activeDisruption;
+  return el.disruption?.value || "NONE";
+}
+
+function updateCrossingTimeDisplay(scenario = currentScenarioForCrossingTime()) {
+  if (!el.crossingTime) return;
+  el.crossingTime.textContent = CROSSING_TIME_RANGES[scenario] || CROSSING_TIME_RANGES.NONE;
+}
+
+function clearWeatherResumeTimer() {
+  if (!weatherResumeTimer) return;
+  clearTimeout(weatherResumeTimer);
+  weatherResumeTimer = null;
+}
+
+function beginManualPause() {
+  if (manualPauseActive) return;
+  manualPauseActive = true;
+  manualPauseStartedWall = Date.now();
+}
+
+function endManualPause() {
+  if (!manualPauseActive) return;
+  logicalClockOffsetMs += Date.now() - manualPauseStartedWall;
+  manualPauseActive = false;
+  manualPauseStartedWall = 0;
+}
+
+function scheduleWeatherResume(delayMs) {
+  clearWeatherResumeTimer();
+  weatherPaused = true;
+  if (delayMs <= 0) {
+    weatherPaused = false;
+    postJSON("/resume").catch(() => {});
+    return;
+  }
+  weatherResumeTimer = setTimeout(async () => {
+    weatherPaused = false;
+    weatherResumeTimer = null;
+    if (manualPauseActive) return;
+    try { await postJSON("/resume"); } catch {}
+  }, delayMs);
+}
+
+function lerpValue(current, target, amount) {
+  return current + (target - current) * amount;
+}
+
+function rgbaString([red, green, blue, alpha]) {
+  return `rgba(${Math.round(red)},${Math.round(green)},${Math.round(blue)},${alpha.toFixed(3)})`;
+}
+
+function webChartLabelForStress(stress) {
+  if (stress >= 75) return "Critical";
+  if (stress >= 55) return "Strained";
+  if (stress >= 30) return "Watch";
+  return "Steady";
+}
+
+function resetWebRadarState() {
+  webRadarState.awaiting = true;
+  webRadarState.currentData = [0, 0, 0, 0, 0, 0];
+  webRadarState.targetData = [0, 0, 0, 0, 0, 0];
+  webRadarState.currentStress = 0;
+  webRadarState.targetStress = 0;
+  webRadarState.currentToneClass = "";
+  webRadarState.targetToneClass = "";
+  webRadarState.currentTone = {
+    border: [...WEB_CHART_TONES[""].border],
+    fill: [...WEB_CHART_TONES[""].fill],
+  };
+  webRadarState.targetTone = {
+    border: [...WEB_CHART_TONES[""].border],
+    fill: [...WEB_CHART_TONES[""].fill],
+  };
+}
+
+function applyWebRadarVisualState(force = false) {
+  if (!webRadarChart) return;
+
+  let changed = force;
+
+  for (let index = 0; index < webRadarState.currentData.length; index++) {
+    const target = webRadarState.targetData[index];
+    const current = webRadarState.currentData[index];
+    let next = force ? target : lerpValue(current, target, WEB_RADAR_VALUE_EASE);
+    if (Math.abs(target - next) < WEB_RADAR_EPSILON) next = target;
+    if (Math.abs(next - current) > WEB_RADAR_EPSILON) changed = true;
+    webRadarState.currentData[index] = next;
+  }
+
+  const stressTarget = webRadarState.targetStress;
+  const stressCurrent = webRadarState.currentStress;
+  let stressNext = force ? stressTarget : lerpValue(stressCurrent, stressTarget, WEB_RADAR_STRESS_EASE);
+  if (Math.abs(stressTarget - stressNext) < WEB_RADAR_EPSILON) stressNext = stressTarget;
+  if (Math.abs(stressNext - stressCurrent) > WEB_RADAR_EPSILON) changed = true;
+  webRadarState.currentStress = stressNext;
+
+  for (const key of ["border", "fill"]) {
+    for (let index = 0; index < webRadarState.currentTone[key].length; index++) {
+      const target = webRadarState.targetTone[key][index];
+      const current = webRadarState.currentTone[key][index];
+      let next = force ? target : lerpValue(current, target, WEB_RADAR_COLOR_EASE);
+      if (Math.abs(target - next) < 0.005) next = target;
+      if (Math.abs(next - current) > 0.002) changed = true;
+      webRadarState.currentTone[key][index] = next;
+    }
+  }
+
+  if (!changed) return;
+
+  const dataset = webRadarChart.data.datasets[0];
+  dataset.data = [...webRadarState.currentData];
+  dataset.borderColor = rgbaString(webRadarState.currentTone.border);
+  dataset.backgroundColor = rgbaString(webRadarState.currentTone.fill);
+  dataset.pointBackgroundColor = rgbaString(webRadarState.currentTone.border);
+  dataset.pointHoverBackgroundColor = rgbaString(webRadarState.currentTone.border);
+  webRadarChart.update("none");
+
+  const webState = document.getElementById("webChartState");
+  if (!webState) return;
+  if (webRadarState.awaiting) {
+    webState.textContent = "Awaiting";
+  } else {
+    webState.textContent = `${webChartLabelForStress(webRadarState.currentStress)} ${Math.round(webRadarState.currentStress)}%`;
+  }
+}
 
 /* ---------- Cache cumulative geo distances ---------- */
 function cacheGeoDist(rid, path) {
@@ -515,8 +733,7 @@ function computeOilPrice() {
   if (oilPriceFrozen) return currentOilPrice;   // hold peak after disruption ends
   const base = 95.0;
   if (!disruptionActiveTS) return base;
-  // Use frozen clock when user-paused so price stops ticking
-  const now = (pricePauseStart && simPaused && !weatherPaused) ? pricePauseStart : Date.now();
+  const now = clockNow();
   const sec = (now - disruptionActiveTS) / 1000;
   switch (activeDisruption) {
     case "PARTIAL_BLOCKADE":  return Math.min(135, base + sec * 0.50);
@@ -537,6 +754,577 @@ function oilTrendLabel() {
   }
 }
 
+/* ---------- Chart initialisation ---------- */
+function initCharts() {
+  const commonOpts = {
+    animation: false,
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { display: false },
+      y: {
+        grid: { color: "rgba(255,255,255,0.06)" },
+        ticks: { font: { size: 9 }, color: "#6e7681", maxTicksLimit: 4 },
+        border: { color: "rgba(255,255,255,0.08)" },
+      },
+    },
+    elements: { point: { radius: 0 } },
+  };
+
+  webRadarChart = new Chart(document.getElementById("webRadarChart"), {
+    type: "radar",
+    data: {
+      labels: WEB_CHART_LABELS,
+      datasets: [{
+        label: "Live Conditions",
+        data: [...webRadarState.currentData],
+        borderColor: rgbaString(webRadarState.currentTone.border),
+        backgroundColor: rgbaString(webRadarState.currentTone.fill),
+        pointBackgroundColor: rgbaString(webRadarState.currentTone.border),
+        pointBorderColor: "#0d1117",
+        pointHoverBackgroundColor: rgbaString(webRadarState.currentTone.border),
+        pointRadius: 2,
+        pointHoverRadius: 3,
+        borderWidth: 2,
+        fill: true,
+      }],
+    },
+    options: {
+      animation: false,
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label(context) {
+              const label = Array.isArray(context.label) ? context.label.join(" ") : context.label;
+              return `${label}: ${Math.round(context.raw)}%`;
+            },
+          },
+        },
+      },
+      elements: { line: { tension: 0.18 } },
+      scales: {
+        r: {
+          min: 0,
+          max: 100,
+          ticks: { display: false, stepSize: 20 },
+          grid: { color: "rgba(255,255,255,0.10)" },
+          angleLines: { color: "rgba(255,255,255,0.12)" },
+          pointLabels: {
+            color: "#8b949e",
+            font: { family: "Manrope", size: 9, weight: "700" },
+          },
+        },
+      },
+    },
+  });
+
+  oilPriceChart = new Chart(document.getElementById("oilPriceChart"), {
+    type: "line",
+    data: {
+      labels: chartHistory.labels,
+      datasets: [{
+        label: "Oil Price",
+        data: chartHistory.oilPrice,
+        borderColor: "#d97706",
+        backgroundColor: "rgba(217,119,6,0.12)",
+        fill: true,
+        borderWidth: 2,
+        tension: 0.3,
+      }],
+    },
+    options: {
+      ...commonOpts,
+      scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, min: 90, suggestedMax: 120 } },
+    },
+  });
+
+  volumeChart = new Chart(document.getElementById("volumeChart"), {
+    type: "line",
+    data: {
+      labels: chartHistory.labels,
+      datasets: [
+        {
+          label: "Exports",
+          data: chartHistory.exportsLive,
+          borderColor: "#e87800",
+          backgroundColor: "rgba(232,120,0,0.10)",
+          fill: false,
+          borderWidth: 2,
+          tension: 0.3,
+        },
+        {
+          label: "Imports",
+          data: chartHistory.importsLive,
+          borderColor: "#1455a8",
+          backgroundColor: "rgba(20,85,168,0.10)",
+          fill: false,
+          borderWidth: 2,
+          tension: 0.3,
+        },
+      ],
+    },
+    options: {
+      ...commonOpts,
+      plugins: { legend: { display: true, labels: { boxWidth: 10, font: { size: 9 }, padding: 6, color: "#8b949e" } } },
+      scales: { ...commonOpts.scales, y: { ...commonOpts.scales.y, min: 0, suggestedMax: 8 } },
+    },
+  });
+}
+
+/* ---------- Chart history reset ---------- */
+function clearChartHistory() {
+  _lastChartTime = -1;
+  _lastChartSampleWall = -1;
+  chartHistory.labels.length      = 0;
+  chartHistory.oilPrice.length    = 0;
+  chartHistory.exportsLive.length = 0;
+  chartHistory.importsLive.length = 0;
+
+  resetWebRadarState();
+  applyWebRadarVisualState(true);
+
+  if (oilPriceChart) {
+    const ds = oilPriceChart.data.datasets[0];
+    ds.borderColor     = "#d97706";
+    ds.backgroundColor = "rgba(217,119,6,0.12)";
+    oilPriceChart.update("none");
+  }
+  if (volumeChart) volumeChart.update("none");
+
+  const riskEl = document.getElementById("riskLevel");
+  if (riskEl) { riskEl.textContent = "Low"; riskEl.className = "widget-value risk-low"; }
+  const bPct   = document.getElementById("blockagePct");
+  if (bPct)    bPct.textContent = "0%";
+  const bBar   = document.getElementById("blockageBar");
+  if (bBar)    bBar.style.width = "0%";
+  const dTime  = document.getElementById("delayTime");
+  if (dTime)   dTime.textContent = "0s";
+  const oilPV  = document.getElementById("oilPriceVal");
+  if (oilPV)   oilPV.textContent = "$95.00";
+  const btV    = document.getElementById("barrelsTotalVal");
+  if (btV)     btV.textContent = "0 · 0.0 Mbbl";
+  const ce     = document.getElementById("causeEffect");
+  if (ce)      { ce.textContent = "Awaiting simulation data…"; ce.className = ""; }
+  hideDiscussion();
+  const webState = document.getElementById("webChartState");
+  if (webState) {
+    webState.textContent = "Awaiting";
+    webState.className = "chart-val radar-chart-val";
+  }
+  setOilMarketTone("");
+}
+
+function setOilMarketTone(cls) {
+  const oilCard = document.getElementById("oilMarketCard");
+  if (!oilCard) return;
+  oilCard.className = cls ? `oil-card ${cls}` : "oil-card";
+}
+
+function setWebChartTone(cls) {
+  const tone = WEB_CHART_TONES[cls] || WEB_CHART_TONES[""];
+  webRadarState.targetToneClass = cls;
+  webRadarState.targetTone = {
+    border: [...tone.border],
+    fill: [...tone.fill],
+  };
+
+  const webState = document.getElementById("webChartState");
+  if (webState) {
+    webState.className = cls ? `chart-val radar-chart-val ${cls}` : "chart-val radar-chart-val";
+  }
+}
+
+function blockagePctForState() {
+  if (!disruptionLive) return 0;
+  switch (activeDisruption) {
+    case "PARTIAL_BLOCKADE": return 50;
+    case "COMPLETE_BLOCKADE": return 100;
+    case "WEATHER_DELAY": return 30;
+    default: return 0;
+  }
+}
+
+function updateWebRadarChart(payload, totalBarrels, inTransitTotal, delaySecs, toneClass) {
+  const blockagePct = blockagePctForState();
+  const throughputPerDay = Number(payload.stats.throughput_per_day ?? 0);
+  const deployed = Number(payload.stats.total_deployed ?? 0);
+  const completed = Number(payload.stats.total_completed ?? 0);
+  const oilPriceLevel = clampPct((currentOilPrice / NORMALIZED_OIL_PRICE_MAX) * 100);
+  const throughputLevel = clampPct((throughputPerDay / NORMAL_THROUGHPUT_PER_DAY) * 100);
+  const flowingBarrelsLevel = clampPct((totalBarrels / NORMAL_FLOWING_BARRELS) * 100);
+  const supplyLevel = clampPct(throughputLevel * 0.60 + flowingBarrelsLevel * 0.40);
+  const pricePressure = clampPct(((currentOilPrice - 95) / (NORMALIZED_OIL_PRICE_MAX - 95)) * 100);
+  const demandLevel = clampPct(60 + pricePressure * 0.25 + blockagePct * 0.20 - throughputLevel * 0.10);
+  const disruptionSeverity = clampPct(blockagePct + Math.min(20, delaySecs * 0.75));
+  const successRate = deployed > 0 ? clampPct(((completed + inTransitTotal) / deployed) * 100) : 100;
+  const delayPenalty = clampPct((delaySecs / 60) * 100);
+  const transitEfficiency = clampPct(successRate * 0.45 + throughputLevel * 0.25 + (100 - delayPenalty) * 0.30);
+
+  webRadarState.awaiting = false;
+  webRadarState.targetData = [
+    oilPriceLevel,
+    supplyLevel,
+    demandLevel,
+    throughputLevel,
+    disruptionSeverity,
+    transitEfficiency,
+  ];
+  setWebChartTone(toneClass);
+
+  webRadarState.targetStress = clampPct(
+    oilPriceLevel * 0.20 +
+    demandLevel * 0.20 +
+    disruptionSeverity * 0.30 +
+    (100 - supplyLevel) * 0.15 +
+    (100 - transitEfficiency) * 0.15
+  );
+  applyWebRadarVisualState();
+}
+
+/* ---------- Discussion Section Generator ---------- */
+function generateDiscussion() {
+  const section = document.getElementById("discussionSection");
+  const body = document.getElementById("discussionBody");
+  if (!section || !body) return;
+
+  // Collect final metrics
+  const scenario = activeDisruption || "NONE";
+  const scenarioNames = {
+    NONE: "No Disruption (Baseline)",
+    PARTIAL_BLOCKADE: "Partial Blockade",
+    COMPLETE_BLOCKADE: "Complete Blockade",
+    WEATHER_DELAY: "Weather Delay",
+  };
+  const scenarioName = scenarioNames[scenario] || scenario;
+
+  const simTimeStr = el.simTime?.textContent || "0.0h";
+  const arrivals = parseInt(el.arrivals?.textContent) || 0;
+  const deployed = parseInt(el.completed?.textContent) || 0;
+  const queue = parseInt(el.queue?.textContent) || 0;
+  const inTransit = parseInt(el.transit?.textContent) || 0;
+  const avgWait = el.avgWait?.textContent || "0.00h";
+  const crossingTime = el.crossingTime?.textContent || "N/A";
+  const throughput = el.throughput?.textContent || "0.00/day";
+  const throughputNum = parseFloat(throughput) || 0;
+
+  const finalPrice = currentOilPrice;
+  const priceChange = finalPrice - 95.0;
+  const priceChangePct = ((priceChange / 95.0) * 100);
+  const trendStr = el.oilTrend?.textContent || "Stable";
+
+  const risk = document.getElementById("riskLevel")?.textContent || "Low";
+  const blockage = document.getElementById("blockagePct")?.textContent || "0%";
+  const avgDelay = document.getElementById("delayTime")?.textContent || "0s";
+
+  const barrelsStr = document.getElementById("barrelsTotalVal")?.textContent || "0 · 0.0 Mbbl";
+
+  // Web radar final values
+  const radarData = webRadarState.currentData;
+  const stressScore = webRadarState.currentStress;
+  const stressLabel = stressScore >= 70 ? "Critical" : stressScore >= 55 ? "Strained" : stressScore >= 30 ? "Watch" : "Steady";
+
+  // Price history analysis
+  const prices = chartHistory.oilPrice;
+  const peakPrice = prices.length > 0 ? Math.max(...prices) : 95;
+  const minPrice = prices.length > 0 ? Math.min(...prices) : 95;
+  const priceVolatility = peakPrice - minPrice;
+
+  // Helper for metric spans
+  const m = (v) => `<span class="disc-metric">${v}</span>`;
+  const mc = (v, cls) => `<span class="disc-metric ${cls}">${v}</span>`;
+
+  // Severity class helper
+  function severityClass(val, thresholds) {
+    if (val >= thresholds[2]) return "disc-critical";
+    if (val >= thresholds[1]) return "disc-warning";
+    if (val >= thresholds[0]) return "disc-caution";
+    return "disc-positive";
+  }
+
+  const priceCls = severityClass(Math.abs(priceChangePct), [3, 8, 15]);
+  const delayCls = severityClass(parseFloat(avgDelay), [2, 10, 30]);
+  const stressCls = severityClass(stressScore, [30, 55, 70]);
+
+  // --- Build narrative ---
+  let html = "";
+
+  // 1. Overview
+  html += `<h3>Overview</h3>`;
+  html += `<p>This simulation modeled oil tanker transit through the Strait of Hormuz over a ${m("60-second")} runtime under the ${m(scenarioName)} scenario. The simulation clock advanced to ${m(simTimeStr)} of simulated maritime time, during which ${m(arrivals + " tanker(s)")} were observed arriving at their destinations.</p>`;
+
+  // 2. Disruption Impact
+  html += `<h3>Disruption Impact</h3>`;
+  if (scenario === "NONE") {
+    html += `<p>Under baseline conditions with no active disruption, the strait operated at full capacity. The blockage level remained at ${mc("0%", "disc-positive")}, and the operational risk was assessed as ${mc("Low", "disc-positive")}. Tanker flow proceeded unimpeded through both outbound and inbound traffic lanes.</p>`;
+  } else if (scenario === "WEATHER_DELAY") {
+    html += `<p>A ${m("10-second weather hold")} was imposed at the start of the simulation, during which all tanker departures were suspended. This resulted in an average delay of ${mc(avgDelay, delayCls)} and a blockage index of ${m(blockage)}. The weather event simulated adverse maritime conditions including reduced visibility and increased sea state that temporarily halted strait navigation.</p>`;
+  } else if (scenario === "PARTIAL_BLOCKADE") {
+    html += `<p>A partial blockade restricted strait throughput to approximately ${m("50%")} of normal capacity. This created a sustained bottleneck, raising the operational risk to ${mc("High", "disc-warning")} with a blockage index of ${m(blockage)}. Tanker routing was constrained, and ${m(queue + " vessel(s)")} remained queued at the time of observation. The average transit delay recorded was ${mc(avgDelay, delayCls)}.</p>`;
+  } else if (scenario === "COMPLETE_BLOCKADE") {
+    html += `<p>A complete blockade was enforced, halting all tanker transit through the strait. The blockage index reached ${mc("100%", "disc-critical")}, and the operational risk was classified as ${mc("Critical", "disc-critical")}. With no vessels able to transit, the average delay grew continuously to ${mc(avgDelay, delayCls)}, reflecting the full duration of the blockade. This scenario represents the most severe supply disruption modeled.</p>`;
+  }
+
+  // 3. Oil Market Analysis
+  html += `<h3>Oil Market Analysis</h3>`;
+  const priceDir = priceChange > 0.5 ? "increased" : priceChange < -0.5 ? "decreased" : "remained stable";
+  html += `<p>Brent Crude pricing ${priceDir} from the baseline of ${m("$95.00/bbl")} to a final level of ${mc("$" + finalPrice.toFixed(2) + "/bbl", priceCls)}, representing a ${mc((priceChangePct >= 0 ? "+" : "") + priceChangePct.toFixed(1) + "%", priceCls)} shift. `;
+  if (priceVolatility > 5) {
+    html += `Price volatility was notable, with values ranging from ${m("$" + minPrice.toFixed(2))} to ${m("$" + peakPrice.toFixed(2))}, a spread of ${m("$" + priceVolatility.toFixed(2))}. `;
+  } else {
+    html += `Price volatility was contained within a ${m("$" + priceVolatility.toFixed(2))} band. `;
+  }
+  html += `The market trend at simulation end was classified as ${m(trendStr)}.</p>`;
+
+  if (scenario !== "NONE") {
+    html += `<p>The disruption applied upward pressure on oil prices as reduced tanker throughput constrained available supply in the market. `;
+    if (priceChangePct > 10) {
+      html += `The magnitude of the price increase suggests significant market stress, consistent with a major supply corridor disruption.`;
+    } else if (priceChangePct > 3) {
+      html += `The moderate price response indicates the market absorbed the disruption with recognizable but manageable impact.`;
+    } else {
+      html += `The modest price reaction suggests the disruption had limited impact on global supply availability.`;
+    }
+    html += `</p>`;
+  }
+
+  // 4. Tanker Operations
+  html += `<h3>Tanker Operations</h3>`;
+  html += `<p>A total of ${m(deployed + " tanker(s)")} were deployed during the simulation, with ${m(inTransit + " vessel(s)")} remaining in transit and ${m(queue + " vessel(s)")} in queue at the time of conclusion. `;
+  html += `The observed throughput rate was ${m(throughput)}, `;
+  if (throughputNum >= 2.5) {
+    html += `which indicates ${mc("healthy", "disc-positive")} channel utilization. `;
+  } else if (throughputNum >= 1.0) {
+    html += `reflecting ${mc("reduced", "disc-caution")} channel capacity under the active scenario. `;
+  } else {
+    html += `indicating ${mc("severely impaired", "disc-critical")} transit operations. `;
+  }
+  html += `The estimated crossing time for this scenario was ${m(crossingTime)}.</p>`;
+  html += `<p>The cargo volume at simulation end was ${m(barrelsStr.split("·")[1]?.trim() || "0.0 Mbbl")} across active tankers in the strait. Average wait time before transit was ${m(avgWait)}, `;
+  const avgWaitNum = parseFloat(avgWait) || 0;
+  if (avgWaitNum < 0.5) {
+    html += `suggesting minimal queuing delays and efficient channel access.</p>`;
+  } else if (avgWaitNum < 2.0) {
+    html += `reflecting moderate congestion in the approach channels.</p>`;
+  } else {
+    html += `indicating significant congestion and operational bottlenecks that would impact supply chain schedules.</p>`;
+  }
+
+  // 5. Risk & Stress Assessment
+  html += `<h3>Risk &amp; Stress Assessment</h3>`;
+  html += `<p>The composite market stress index at simulation end was ${mc(stressScore.toFixed(0) + "%", stressCls)}, classified as ${mc(stressLabel, stressCls)}. `;
+  html += `The six-axis radar assessment recorded the following normalized levels: `;
+  const axisLabels = ["Oil Price Level", "Supply Level", "Demand Level", "Tanker Throughput", "Disruption Severity", "Transit Efficiency"];
+  const axisFragments = radarData.map((v, i) => `${axisLabels[i]} at ${m(v.toFixed(0) + "%")}`);
+  html += axisFragments.join(", ") + `.</p>`;
+
+  html += `<p>The overall risk classification was ${m(risk)}. `;
+  if (risk === "Low") {
+    html += `Under these conditions, maritime operations through the Strait of Hormuz face no significant threats, and supply chain continuity is maintained.</p>`;
+  } else if (risk === "Moderate") {
+    html += `Operators should maintain situational awareness, as conditions could escalate. Contingency routing plans should be on standby.</p>`;
+  } else if (risk === "High") {
+    html += `Active risk mitigation measures are recommended, including alternative routing and increased strategic reserve drawdowns to buffer against further supply disruptions.</p>`;
+  } else {
+    html += `Immediate intervention is warranted. This level of disruption poses systemic risk to global energy markets and requires coordinated international response.</p>`;
+  }
+
+  // 6. Conclusion
+  html += `<h3>Conclusion</h3>`;
+  if (scenario === "NONE") {
+    html += `<p>The baseline scenario confirmed nominal operations through the Strait of Hormuz. All key performance indicators remained within expected bounds, with stable pricing, healthy throughput, and minimal risk. This scenario serves as a reference point for comparative analysis against disruption scenarios.</p>`;
+  } else if (scenario === "WEATHER_DELAY") {
+    html += `<p>The weather delay scenario demonstrated that short-duration meteorological disruptions introduce a temporary but recoverable impact on tanker flow. While the initial hold created a burst of queued traffic, the system recovered as vessels resumed transit at normal speed. The oil price impact was limited, consistent with market expectations for transient weather events.</p>`;
+  } else if (scenario === "PARTIAL_BLOCKADE") {
+    html += `<p>The partial blockade scenario revealed meaningful degradation in strait throughput and a corresponding upward pressure on oil prices. The sustained nature of the restriction compounds over time, and extended durations would likely amplify the observed effects. Mitigation strategies such as priority scheduling and alternative routing become increasingly valuable under these conditions.</p>`;
+  } else {
+    html += `<p>The complete blockade scenario demonstrated the catastrophic impact of a full strait closure on global oil logistics. With zero throughput, oil prices escalated rapidly, delays grew unbounded, and the system entered critical stress. This scenario underscores the strategic importance of the Strait of Hormuz and the necessity for robust contingency frameworks in maritime energy security planning.</p>`;
+  }
+
+  body.innerHTML = html;
+  section.style.display = "block";
+  // Scroll discussion into view
+  setTimeout(() => section.scrollIntoView({ behavior: "smooth", block: "start" }), 120);
+}
+
+function hideDiscussion() {
+  const section = document.getElementById("discussionSection");
+  if (section) section.style.display = "none";
+}
+
+function freezeDashboard(statusText) {
+  if (simStopTimer) { clearTimeout(simStopTimer); simStopTimer = null; }
+  clearWeatherResumeTimer();
+  currentOilPrice = computeOilPrice();
+  applyWebRadarVisualState(true);
+  if (el.oilPrice) el.oilPrice.textContent = `$${currentOilPrice.toFixed(2)}/bbl`;
+  if (el.oilTrend) el.oilTrend.textContent = oilTrendLabel();
+  uiFrozen = true;
+  frozenWallTime = clockNow();
+  simRunning = false;
+  simPaused = false;
+  weatherPaused = false;
+  simStartWall = 0;
+  manualPauseActive = false;
+  manualPauseStartedWall = 0;
+  pricePauseStart = null;
+  if (statusText) el.status.textContent = statusText;
+  generateDiscussion();
+}
+
+async function stopSimulation(statusText) {
+  freezeDashboard(statusText);
+  try { await postJSON("/stop"); } catch {}
+}
+
+function getAverageDelaySeconds(payload) {
+  const backendSecs = payload.stats.avg_delay_real_secs;
+  if (Number.isFinite(backendSecs) && backendSecs > 0.05) {
+    return backendSecs;
+  }
+
+  if (activeDisruption === "WEATHER_DELAY" && weatherDelayStartWall > 0) {
+    const weatherEnd = weatherVisualEnd > 0 ? weatherVisualEnd : weatherDelayStartWall + 10000;
+    return Math.max(0, Math.min(clockNow(), weatherEnd) - weatherDelayStartWall) / 1000;
+  }
+
+  if (activeDisruption === "COMPLETE_BLOCKADE" && disruptionLive && disruptionActiveTS) {
+    return Math.max(0, clockNow() - disruptionActiveTS) / 1000;
+  }
+
+  return Number.isFinite(backendSecs) ? backendSecs : 0;
+}
+
+/* ---------- Live chart updates (called from updateStats) ---------- */
+function updateCharts(payload) {
+  const simTime = payload.sim_time_hours;
+  const ships   = payload.ships || [];   // use payload directly — liveShips is always 1 frame behind
+
+  // Count live in-transit ships from this payload once and reuse across charts/widgets.
+  let exportsLive = 0;
+  let importsLive = 0;
+  let totalBarrels = 0;
+  let inTransitTotal = 0;
+  for (const s of ships) {
+    if (s.status !== "in_transit") continue;
+    inTransitTotal++;
+    totalBarrels += (s.cargo_barrels || 0);
+    const dir = RDEFS[s.route_id]?.dir;
+    if (dir === "out") exportsLive++;
+    else if (dir === "in") importsLive++;
+  }
+
+  // Sample charts on a steady UI interval so the oil price line animates during weather holds
+  // even while sim time is paused at zero.
+  const chartSampleNow = clockNow();
+  if (_lastChartSampleWall < 0 || chartSampleNow - _lastChartSampleWall >= CHART_SAMPLE_INTERVAL_MS) {
+    _lastChartTime = simTime;
+    _lastChartSampleWall = chartSampleNow;
+
+    chartHistory.labels.push(simTime.toFixed(1));
+    chartHistory.oilPrice.push(+currentOilPrice.toFixed(2));
+    chartHistory.exportsLive.push(exportsLive);
+    chartHistory.importsLive.push(importsLive);
+
+    if (chartHistory.labels.length > CHART_MAX_PTS) {
+      chartHistory.labels.shift();
+      chartHistory.oilPrice.shift();
+      chartHistory.exportsLive.shift();
+      chartHistory.importsLive.shift();
+    }
+  }
+
+  // Oil price chart: recolour by disruption severity
+  if (oilPriceChart) {
+    const ds = oilPriceChart.data.datasets[0];
+    if (disruptionLive) {
+      switch (activeDisruption) {
+        case "COMPLETE_BLOCKADE":
+          ds.borderColor = "#dc2626"; ds.backgroundColor = "rgba(220,38,38,0.12)"; break;
+        case "PARTIAL_BLOCKADE":
+          ds.borderColor = "#ea580c"; ds.backgroundColor = "rgba(234,88,12,0.12)"; break;
+        case "WEATHER_DELAY":
+          ds.borderColor = "#d97706"; ds.backgroundColor = "rgba(217,119,6,0.12)"; break;
+        default:
+          ds.borderColor = "#d97706"; ds.backgroundColor = "rgba(217,119,6,0.12)";
+      }
+    } else {
+      ds.borderColor = "#d97706"; ds.backgroundColor = "rgba(217,119,6,0.12)";
+    }
+    oilPriceChart.update("none");
+  }
+  if (volumeChart) volumeChart.update("none");
+
+  // Current price span
+  const oilPV = document.getElementById("oilPriceVal");
+  if (oilPV) oilPV.textContent = `$${currentOilPrice.toFixed(2)}`;
+
+  const btV = document.getElementById("barrelsTotalVal");
+  if (btV) btV.textContent = `${inTransitTotal} · ${(totalBarrels / 1_000_000).toFixed(1)} Mbbl`;
+
+  // Risk widget
+  const riskEl = document.getElementById("riskLevel");
+  if (riskEl) {
+    let risk, riskClass;
+    if (!disruptionLive) {
+      risk = "Low"; riskClass = "widget-value risk-low";
+    } else {
+      switch (activeDisruption) {
+        case "WEATHER_DELAY":     risk = "Moderate"; riskClass = "widget-value risk-moderate"; break;
+        case "PARTIAL_BLOCKADE":  risk = "High";     riskClass = "widget-value risk-high";     break;
+        case "COMPLETE_BLOCKADE": risk = "Critical";  riskClass = "widget-value risk-critical";  break;
+        default:                  risk = "Low";      riskClass = "widget-value risk-low";
+      }
+    }
+    riskEl.textContent = risk;
+    riskEl.className   = riskClass;
+  }
+
+  // Blockage widget
+  const blockagePct = blockagePctForState();
+  const bPct = document.getElementById("blockagePct");
+  if (bPct) bPct.textContent = `${blockagePct}%`;
+  const bBar = document.getElementById("blockageBar");
+  if (bBar) bBar.style.width = `${blockagePct}%`;
+
+  // Avg Delay widget — real wall-clock seconds from ship spawn to transit start
+  // Weather=~10s pause, Partial=~0s (ships start immediately), Complete=grows 0→60s
+  const delaySecs = getAverageDelaySeconds(payload);
+  const dTime = document.getElementById("delayTime");
+  if (dTime) {
+    dTime.textContent = delaySecs < 1 ? "0s" : delaySecs < 60 ? `${delaySecs.toFixed(1)}s` : `${(delaySecs / 60).toFixed(1)}m`;
+  }
+
+  // Cause → Effect banner
+  const ce = document.getElementById("causeEffect");
+  let oilMarketTone = "";
+  if (ce) {
+    let msg, cls;
+    if (!disruptionLive || !disruptionActiveTS) {
+      msg = "Tankers ↑ → Supply ↑ → Price Stable"; cls = "";
+    } else {
+      switch (activeDisruption) {
+        case "WEATHER_DELAY":
+          msg = "Delays → Minor Supply ↓ → Price ↑";     cls = "warn-yellow"; break;
+        case "PARTIAL_BLOCKADE":
+          msg = "Traffic ↓ → Supply ↓ → Price ↑";        cls = "warn-orange"; break;
+        case "COMPLETE_BLOCKADE":
+          msg = "BLOCKED → Supply ↓↓ → Price ↑↑";        cls = "warn-red";    break;
+        default:
+          msg = "Tankers ↑ → Supply ↑ → Price Stable";   cls = "";
+      }
+    }
+    ce.textContent = msg;
+    ce.className   = cls;
+    oilMarketTone  = cls;
+  }
+  setOilMarketTone(oilMarketTone);
+  updateWebRadarChart(payload, totalBarrels, inTransitTotal, delaySecs, oilMarketTone);
+}
+
 /* ---------- Weather overlay drawing ---------- */
 function drawCloud(cx, cy, sc) {
   ctx.save();
@@ -554,7 +1342,7 @@ function drawCloud(cx, cy, sc) {
 }
 
 function drawRainDrops(x, y, w, h) {
-  const now = Date.now();
+  const now = clockNow();
   ctx.save();
   ctx.strokeStyle = "rgba(90,150,225,0.50)";
   ctx.lineWidth = 1.5;
@@ -571,10 +1359,11 @@ function drawRainDrops(x, y, w, h) {
 }
 
 function drawWeatherOverlay() {
-  if (weatherVisualEnd <= 0 || Date.now() >= weatherVisualEnd) return;
+  const now = clockNow();
+  if (weatherVisualEnd <= 0 || now >= weatherVisualEnd) return;
 
   const W = canvas.width, H = canvas.height;
-  const fade = Math.min(1, (weatherVisualEnd - Date.now()) / 3000); // fade out last 3s
+  const fade = Math.min(1, (weatherVisualEnd - now) / 3000); // fade out last 3s
 
   const lx = LAY.laneL * W, rx = LAY.laneR * W;
   const areaW = rx - lx;
@@ -609,7 +1398,7 @@ function drawWeatherOverlay() {
   ctx.fillText("WEATHER DELAY ACTIVE", cx0, cy + (botY - topY) * 0.32);
 
   // Countdown
-  const secLeft = Math.ceil((weatherVisualEnd - Date.now()) / 1000);
+  const secLeft = Math.ceil((weatherVisualEnd - now) / 1000);
   ctx.font = "11px Manrope, sans-serif";
   ctx.strokeText(`Clearing in ${secLeft}s...`, cx0, cy + (botY - topY) * 0.32 + 18);
   ctx.fillText(`Clearing in ${secLeft}s...`, cx0, cy + (botY - topY) * 0.32 + 18);
@@ -654,7 +1443,7 @@ function drawShips() {
   // Hard guard: if we're in the middle of a stop, draw nothing at all.
   if (simStopping) return;
 
-  const weatherHold  = weatherVisualEnd > 0 && Date.now() < weatherVisualEnd;
+  const weatherHold  = weatherVisualEnd > 0 && clockNow() < weatherVisualEnd;
   const blockadeHold = disruptionLive && activeDisruption === "COMPLETE_BLOCKADE";
   const W = canvas.width, H = canvas.height;
 
@@ -873,15 +1662,18 @@ function frame() {
   drawLegend();
   drawTitle();
 
-  // Tick oil price smoothly every frame
-  currentOilPrice = computeOilPrice();
-  if (el.oilPrice) el.oilPrice.textContent = `$${currentOilPrice.toFixed(2)}/bbl`;
-  if (el.oilTrend) el.oilTrend.textContent = oilTrendLabel();
+  if (!uiFrozen) {
+    // Tick oil price smoothly every frame
+    currentOilPrice = computeOilPrice();
+    if (el.oilPrice) el.oilPrice.textContent = `$${currentOilPrice.toFixed(2)}/bbl`;
+    if (el.oilTrend) el.oilTrend.textContent = oilTrendLabel();
+    applyWebRadarVisualState();
 
-  // Dynamic running timer (0s / 60s) — keep ticking during weather pause too
-  if (simStartWall > 0 && simRunning && (!simPaused || weatherPaused)) {
-    const elapsed = Math.min(60, Math.floor((Date.now() - simStartWall) / 1000));
-    el.status.textContent = `${elapsed}s / 60s`;
+    // Dynamic running timer (0s / 60s) — keep ticking during weather pause too
+    if (simStartWall > 0 && simRunning && (!simPaused || weatherPaused)) {
+      const elapsed = Math.min(60, Math.floor((clockNow() - simStartWall) / 1000));
+      el.status.textContent = `${elapsed}s / 60s`;
+    }
   }
 
   requestAnimationFrame(frame);
@@ -891,8 +1683,6 @@ function frame() {
 //  STATS PANEL (DOM — preserved from original)
 // =======================================================================
 const el = {
-  duration:   document.getElementById("duration"),
-  arrival:    document.getElementById("arrival"),
   disruption: document.getElementById("disruption"),
   mitigation: document.getElementById("mitigation"),
   speed:      document.getElementById("speed"),
@@ -906,6 +1696,7 @@ const el = {
   queue:      document.getElementById("queue"),
   transit:    document.getElementById("transit"),
   avgWait:    document.getElementById("avgWait"),
+  crossingTime: document.getElementById("crossingTime"),
   throughput: document.getElementById("throughput"),
   status:     document.getElementById("status"),
   oilPrice:   document.getElementById("oilPrice"),
@@ -913,6 +1704,9 @@ const el = {
 };
 
 function updateStats(payload) {
+  if (uiFrozen) return;
+
+  updateCrossingTimeDisplay();
   el.simTime.textContent    = `${payload.sim_time_hours.toFixed(1)}h`;
   el.arrivals.textContent   = String(frontendArrivals);
   el.completed.textContent  = String(payload.stats.total_deployed ?? 0);
@@ -921,33 +1715,25 @@ function updateStats(payload) {
   el.avgWait.textContent    = `${payload.stats.avg_wait_hours.toFixed(2)}h`;
   el.throughput.textContent = `${payload.stats.throughput_per_day.toFixed(2)}/day`;
 
-  const wasPaused = simPaused;
+  const weatherEffectActive = activeDisruption === "WEATHER_DELAY" && weatherVisualEnd > 0 && clockNow() < weatherVisualEnd;
   simRunning = !!payload.running;
   simPaused  = !!payload.paused;
-  disruptionLive = !!payload.disruption_active;
-
-  // Pause/resume oil price clock so paused time is excluded
-  if (simPaused && !wasPaused && disruptionActiveTS && !weatherPaused) {
-    pricePauseStart = Date.now();
-  }
-  if (!simPaused && wasPaused && pricePauseStart && disruptionActiveTS) {
-    // Shift the start timestamp forward by the pause duration
-    disruptionActiveTS += (Date.now() - pricePauseStart);
-    pricePauseStart = null;
-  }
+  disruptionLive = !!payload.disruption_active || weatherEffectActive;
 
   // Status — only override for stopped / user-pause (timer handled in frame loop)
   if (!payload.running) { el.status.textContent = "Stopped"; simStartWall = 0; }
   else if (payload.paused && !weatherPaused) el.status.textContent = "Paused";
 
   // Track disruption activation for oil price scaling
-  if (payload.disruption_active && !disruptionActiveTS) {
-    disruptionActiveTS = Date.now();
-  } else if (!payload.disruption_active && disruptionActiveTS) {
+  if (disruptionLive && !disruptionActiveTS) {
+    disruptionActiveTS = clockNow();
+  } else if (!disruptionLive && disruptionActiveTS) {
     // Disruption ended — freeze price at current level (don't snap back)
     oilPriceFrozen = true;
     disruptionActiveTS = null;
   }
+
+  updateCharts(payload);
 }
 
 // =======================================================================
@@ -959,7 +1745,7 @@ async function fetchAndRenderState() {
     if (!res.ok) return;
     const payload = await res.json();
     updateStats(payload);
-    if (payload.running && !simStopping) liveShips = payload.ships || [];
+    if (!uiFrozen && payload.running && !simStopping) liveShips = payload.ships || [];
   } catch { /* keep polling */ }
 }
 
@@ -983,40 +1769,53 @@ async function postJSON(url, body = null) {
 const DISRUPTION_TANKERS = {
   NONE:              { export_count: 6, import_count: 6 },   // 12 total
   PARTIAL_BLOCKADE:  { export_count: 2, import_count: 4 },   //  6 total
-  COMPLETE_BLOCKADE: { export_count: 0, import_count: 0 },   //  0 total
+  COMPLETE_BLOCKADE: { export_count: 3, import_count: 3 },   //  6 total — all blocked, growing delay
   WEATHER_DELAY:     { export_count: 3, import_count: 3 },   //  6 total
 };
 
 /* Controls */
 el.start.addEventListener("click", async () => {
   // Release the stop guard and wipe any residual ship state from the previous run
+  hideDiscussion();
   simStopping = false;
+  uiFrozen = false;
+  frozenWallTime = 0;
+  clearWeatherResumeTimer();
+  manualPauseActive = false;
+  manualPauseStartedWall = 0;
+  logicalClockOffsetMs = 0;
   liveShips   = [];
   for (const k of Object.keys(shipSmooth))    delete shipSmooth[k];
   for (const k of Object.keys(shipMeta))      delete shipMeta[k];
   for (const k of Object.keys(departedShips)) delete departedShips[k];
   frontendArrivals = 0;
+  clearChartHistory();             // reset _lastChartTime so new run starts fresh
   // Clear any previous session timer
   if (simStopTimer) { clearTimeout(simStopTimer); simStopTimer = null; }
 
   activeDisruption   = el.disruption.value;
-  simStartWall       = Date.now();
+  simStartWall       = clockNow();
   disruptionActiveTS = null;
   disruptionLive     = false;
   oilPriceFrozen     = false;
   currentOilPrice    = 95.0;
-  weatherPaused      = false;
-  weatherVisualEnd   = activeDisruption === "WEATHER_DELAY" ? Date.now() + 10000 : 0;
+  weatherPaused      = activeDisruption === "WEATHER_DELAY";
+  weatherDelayStartWall = 0;
+  weatherVisualEnd   = activeDisruption === "WEATHER_DELAY" ? clockNow() + 10000 : 0;
+  if (activeDisruption === "WEATHER_DELAY") {
+    weatherDelayStartWall = clockNow();
+  }
+  updateCrossingTimeDisplay(activeDisruption);
 
   const tankerCfg = DISRUPTION_TANKERS[activeDisruption] || DISRUPTION_TANKERS.NONE;
 
   await postJSON("/start", {
-    duration_hours:          Number(el.duration.value),
-    arrival_rate_per_hour:   Number(el.arrival.value),
+    duration_hours:          DEFAULT_DURATION_HOURS,
     export_count:            tankerCfg.export_count,
     import_count:            tankerCfg.import_count,
     disruption:              el.disruption.value,
     mitigation:              el.mitigation.value,
+    start_paused:            activeDisruption === "WEATHER_DELAY",
   });
   // Apply the current dropdown speed immediately so the backend doesn't start at its
   // internal default (1.0) when the user has a different speed selected.
@@ -1025,27 +1824,40 @@ el.start.addEventListener("click", async () => {
   // Weather delay: pause the backend so ships truly don't move during the storm,
   // then resume after 10 seconds so ships start fresh from port.
   if (activeDisruption === "WEATHER_DELAY") {
-    weatherPaused = true;
-    await postJSON("/pause");
-    setTimeout(async () => {
-      weatherPaused = false;
-      try { await postJSON("/resume"); } catch {}
-    }, 10000);
+    scheduleWeatherResume(10000);
   }
 
   // Auto-stop after 60 seconds of wall-clock time
   simStopTimer = setTimeout(async () => {
-    resetUI();                         // wipe ships instantly, sets simStopping = true
-    try { await postJSON("/stop"); } catch {}
-    // simStopping stays true — only Start clears it
+    await stopSimulation("60s / 60s");
   }, 60000);
 });
-el.pause.addEventListener("click",  () => postJSON("/pause"));
-el.resume.addEventListener("click", () => postJSON("/resume"));
+el.pause.addEventListener("click", async () => {
+  clearWeatherResumeTimer();
+  beginManualPause();
+  weatherPaused = false;
+  el.status.textContent = "Paused";
+  try { await postJSON("/pause"); } catch {}
+});
+el.resume.addEventListener("click", async () => {
+  endManualPause();
+  const remainingWeatherMs = activeDisruption === "WEATHER_DELAY"
+    ? Math.max(0, weatherVisualEnd - clockNow())
+    : 0;
+
+  if (remainingWeatherMs > 0) {
+    scheduleWeatherResume(remainingWeatherMs);
+    return;
+  }
+
+  weatherPaused = false;
+  try { await postJSON("/resume"); } catch {}
+});
 el.stop.addEventListener("click", async () => {
-  resetUI();                           // wipe ships instantly, sets simStopping = true
-  try { await postJSON("/stop"); } catch {}
-  // simStopping stays true — only Start clears it
+  await stopSimulation("Stopped");
+});
+el.disruption.addEventListener("change", () => {
+  if (!simRunning && !simPaused && !uiFrozen) updateCrossingTimeDisplay(el.disruption.value);
 });
 el.speed.addEventListener("change", () => postJSON("/speed", { speed: Number(el.speed.value) }));
 
@@ -1058,14 +1870,19 @@ function resetUI() {
   for (const k of Object.keys(departedShips)) delete departedShips[k];
   frontendArrivals = 0;
   if (simStopTimer) { clearTimeout(simStopTimer); simStopTimer = null; }
+  clearWeatherResumeTimer();
   simStartWall       = 0;
   simRunning         = false;
   simPaused          = false;
   weatherPaused      = false;
+  manualPauseActive  = false;
+  manualPauseStartedWall = 0;
+  logicalClockOffsetMs = 0;
   activeDisruption   = "NONE";
   disruptionActiveTS = null;
   disruptionLive     = false;
   oilPriceFrozen     = false;
+  weatherDelayStartWall = 0;
   weatherVisualEnd   = 0;
   currentOilPrice    = 95.0;
 
@@ -1075,10 +1892,12 @@ function resetUI() {
   el.queue.textContent      = "0";
   el.transit.textContent    = "0";
   el.avgWait.textContent    = "0.00h";
+  updateCrossingTimeDisplay();
   el.throughput.textContent = "0.00/day";
   el.status.textContent     = "Stopped";
   el.oilPrice.textContent   = "$95.00/bbl";
   el.oilTrend.textContent   = "Stable";
+  clearChartHistory();
 }
 
 /* WebSocket */
@@ -1089,7 +1908,7 @@ function connectSocket() {
   ws.onmessage = (e) => {
     const p = JSON.parse(e.data);
     updateStats(p);
-    if (p.running && !simStopping) liveShips = p.ships || [];
+    if (!uiFrozen && p.running && !simStopping) liveShips = p.ships || [];
   };
   ws.onerror = () => startPollingFallback();
   ws.onclose = () => { startPollingFallback(); setTimeout(connectSocket, 1000); };
@@ -1109,7 +1928,9 @@ async function loadRoutes() {
 
 /* Bootstrap */
 (async function () {
+  updateCrossingTimeDisplay();
   await loadRoutes();
+  initCharts();
   connectSocket();
   requestAnimationFrame(frame);
 })();

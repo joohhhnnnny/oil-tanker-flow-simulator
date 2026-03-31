@@ -7,6 +7,7 @@ Defines the core simulation entities: Tankers and the Strait of Hormuz.
 from __future__ import annotations
 
 import simpy
+import random
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional, Generator, Any
 from enum import Enum, auto
@@ -53,7 +54,15 @@ class Tanker:
     cargo_barrels: int = 0
 
     def __post_init__(self):
-        self.cargo_barrels = self.config.capacity_barrels
+        # Randomize cargo within realistic per-type ranges (barrels)
+        _CARGO_RANGES = {
+            TankerType.VLCC:    (1_900_000, 2_200_000),
+            TankerType.SUEZMAX: (  800_000, 1_000_000),
+            TankerType.AFRAMAX: (  500_000,   800_000),
+            TankerType.PANAMAX: (  300_000,   500_000),
+        }
+        lo, hi = _CARGO_RANGES.get(self.tanker_type, (self.config.capacity_barrels,) * 2)
+        self.cargo_barrels = random.randint(lo, hi)
         self.priority = self.config.priority
 
     @property
